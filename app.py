@@ -270,24 +270,31 @@ st.markdown(
     .live-indicator { animation: pulse-green 2s infinite; }
 
     /* === HIDE STREAMLIT BRANDING (PRESERVING SIDEBAR TOGGLE ON MOBILE) === */
-    #MainMenu  { visibility: hidden; }
-    footer     { visibility: hidden; }
-    div[data-testid="stDecoration"] { display: none; }
-    div[data-testid="stToolbar"] { display: none; }
+    #MainMenu  { visibility: hidden !important; }
+    footer     { visibility: hidden !important; }
+    div[data-testid="stDecoration"] { display: none !important; }
+    div[data-testid="stToolbar"]    { display: none !important; }
 
-    /* Make the mobile sidebar toggle button prominent and easily tappable */
-    div[data-testid="stSidebarCollapsedControl"] {
+    header, [data-testid="stHeader"] {
+        background: transparent !important;
+        visibility: visible !important;
+        height: 3rem !important;
+    }
+
+    /* Make the mobile sidebar toggle button prominent, high-contrast and easily tappable */
+    div[data-testid="stSidebarCollapsedControl"],
+    div[data-testid="collapsedControl"],
+    button[data-testid="stBaseButton-header"] {
         visibility: visible !important;
         display: flex !important;
         background-color: #1e293b !important;
         border-radius: 8px !important;
         border: 1.5px solid #3b82f6 !important;
-        z-index: 1000000 !important;
-        margin-left: 6px !important;
-        margin-top: 4px !important;
-        box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4) !important;
+        z-index: 9999999 !important;
+        box-shadow: 0 2px 10px rgba(59, 130, 246, 0.45) !important;
     }
-    div[data-testid="stSidebarCollapsedControl"] button {
+    div[data-testid="stSidebarCollapsedControl"] button,
+    div[data-testid="collapsedControl"] button {
         color: #60a5fa !important;
     }
     </style>
