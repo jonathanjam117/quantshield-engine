@@ -290,21 +290,46 @@ def analyze_soccer_match(
             })
 
     # ==========================================
-    # MARKET B: Total de Goles Asiático (Over 2.0)
+    # MARKET B: Totales de Goles (Over 2.0 Asiático, Over/Under 2.5, Over/Under 1.5) & BTTS
     # ==========================================
-    # P_perder = (0-0, 1-0, 0-1)
+    # Over 2.0 Asiático (reembolso en exactamente 2 goles)
     p_perder_over2 = float(poisson_mat[0, 0] + poisson_mat[1, 0] + poisson_mat[0, 1])
-    # P_reembolso = (2-0, 0-2, 1-1)
     p_reembolso_over2 = float(poisson_mat[2, 0] + poisson_mat[0, 2] + poisson_mat[1, 1])
-    # P_ganar = 1 - (P_perder + P_reembolso)
     p_ganar_over2 = float(max(0.0, 1.0 - (p_perder_over2 + p_reembolso_over2)))
-
-    # Effective probability: P_ganar / (P_ganar + P_perder)
-    denom = p_ganar_over2 + p_perder_over2
-    p_eff_over2 = (p_ganar_over2 / denom) if denom > 0 else 0.0
+    denom_over2 = p_ganar_over2 + p_perder_over2
+    p_eff_over2 = (p_ganar_over2 / denom_over2) if denom_over2 > 0 else 0.0
     fair_odds_over2 = (1.0 / p_eff_over2) if p_eff_over2 > 0 else 999.0
 
-    # Look for Over 2.0 lines in recreational books
+    # Over / Under 1.5, 2.5, 3.5 Goles (sin reembolso)
+    p_under_15 = float(poisson_mat[0, 0] + poisson_mat[1, 0] + poisson_mat[0, 1])
+    p_over_15 = float(max(0.0, 1.0 - p_under_15))
+
+    p_under_25 = float(p_under_15 + poisson_mat[2, 0] + poisson_mat[0, 2] + poisson_mat[1, 1])
+    p_over_25 = float(max(0.0, 1.0 - p_under_25))
+
+    p_under_35 = float(p_under_25 + poisson_mat[3, 0] + poisson_mat[0, 3] + poisson_mat[2, 1] + poisson_mat[1, 2])
+    p_over_35 = float(max(0.0, 1.0 - p_under_35))
+
+    # Ambos Equipos Marcan (BTTS)
+    p_btts_yes = float(np.sum(poisson_mat[1:, 1:]))
+    p_btts_no = float(max(0.0, 1.0 - p_btts_yes))
+
+    # Adjuntar métricas avanzadas de Poisson al evento para el Bet Builder de la interfaz
+    try:
+        from models.parlay_engine import calculate_poisson_advanced_markets
+        event["advanced_poisson_props"] = calculate_poisson_advanced_markets(lambda_h, lambda_a)
+    except Exception:
+        pass
+
+    ai_adj_dict = {
+        "factor_local": getattr(ai_adjustment, "factor_ajuste_local", 1.0),
+        "factor_visita": getattr(ai_adjustment, "factor_ajuste_visita", 1.0),
+        "confianza": getattr(ai_adjustment, "confianza_ia", 0.8),
+        "riesgo": getattr(ai_adjustment, "nivel_riesgo", "Bajo"),
+        "justificacion": getattr(ai_adjustment, "justificacion_tactica", ""),
+    } if ai_adjustment is not None else None
+
+    # Evaluar casas recreacionales colombianas para mercados de Goles y BTTS
     for bm in bookmakers:
         bm_key = bm.get("key", "")
         bm_title = bm.get("title", bm_key.capitalize())
@@ -315,14 +340,17 @@ def analyze_soccer_match(
             continue
 
         for m in bm.get("markets", []):
-            if m.get("key") == "totals":
+            m_key = m.get("key", "").lower()
+            if m_key == "totals":
                 for out in m.get("outcomes", []):
                     name = out.get("name", "")
                     point = float(out.get("point", 0.0))
                     price = float(out.get("price", 0.0))
+                    if price <= 1.0:
+                        continue
 
-                    if name.lower() == "over" and abs(point - 2.0) < 0.05 and price > 1.0:
-                        # EV = P_ganar * (Cuota - 1) - P_perder
+                    # 1. Over 2.0 Asiático
+                    if name.lower() == "over" and abs(point - 2.0) < 0.05:
                         ev_over2 = (p_ganar_over2 * (price - 1.0)) - p_perder_over2
                         ev_over2_pct = ev_over2 * 100.0
 
@@ -372,13 +400,176 @@ def analyze_soccer_match(
                                 "instructions": instructions,
                                 "dutching": None,
                                 "lambdas": f"λH: {lambda_h} | λA: {lambda_a} (P_win: {round(p_ganar_over2*100, 1)}% | P_push: {round(p_reembolso_over2*100, 1)}%)",
-                                "ai_adjustment": {
-                                    "factor_local": getattr(ai_adjustment, "factor_ajuste_local", 1.0),
-                                    "factor_visita": getattr(ai_adjustment, "factor_ajuste_visita", 1.0),
-                                    "confianza": getattr(ai_adjustment, "confianza_ia", 0.8),
-                                    "riesgo": getattr(ai_adjustment, "nivel_riesgo", "Bajo"),
-                                    "justificacion": getattr(ai_adjustment, "justificacion_tactica", ""),
-                                } if ai_adjustment is not None else None,
+                                "ai_adjustment": ai_adj_dict,
                             })
+
+                    # 2. Over / Under 2.5 Goles (Mercado Estándar Internacional)
+                    elif abs(point - 2.5) < 0.05:
+                        is_over = name.lower() == "over"
+                        p_sel = p_over_25 if is_over else p_under_25
+                        sel_text = "Más de 2.5 Goles" if is_over else "Menos de 2.5 Goles"
+                        mkt_name = "Over 2.5 Goles" if is_over else "Under 2.5 Goles"
+                        fair_o = (1.0 / p_sel) if p_sel > 0 else 999.0
+                        ev_pct = ((p_sel * price) - 1.0) * 100.0
+
+                        passes_filter, _ = evaluate_opportunity_filters(
+                            odds=price,
+                            ev_percent=ev_pct,
+                            min_ev=min_ev,
+                            min_odds=min_odds,
+                            max_odds=max_odds,
+                        )
+
+                        if passes_filter:
+                            kelly_res = calculate_kelly_stake(
+                                odds=price,
+                                effective_prob=p_sel,
+                                bankroll=bankroll,
+                                kelly_fraction=kelly_k,
+                            )
+                            total_stake = kelly_res["recommended_stake"]
+
+                            instructions = (
+                                f"1. Ingresa a tu casa de apuestas ({bm_title}).\n"
+                                f"2. Busca el partido '{match_name}'.\n"
+                                f"3. En la sección 'Total de Goles', selecciona '{sel_text}' a cuota actual {price} (Mínima aceptable: {round(fair_o, 2)}).\n"
+                                f"4. Coloca un stake de ${total_stake} ({round(kelly_res['recommended_stake_pct'] * 100, 1)}% del bankroll).\n"
+                                f"5. Probabilidad real Poisson: {round(p_sel * 100, 1)}% | Ventaja matemática: +{round(ev_pct, 2)}%."
+                            )
+
+                            opportunities.append({
+                                "sport": "Fútbol",
+                                "tournament": sport_meta.get("name", "Fútbol"),
+                                "match": match_name,
+                                "commence_time": event.get("commence_time", ""),
+                                "market": mkt_name,
+                                "selection": sel_text,
+                                "bookmaker": bm_title,
+                                "odds": round(price, 2),
+                                "fair_odds": round(fair_o, 2),
+                                "effective_prob_pct": round(p_sel * 100.0, 1),
+                                "ev_percent": round(ev_pct, 2),
+                                "recommended_stake": total_stake,
+                                "recommended_stake_pct": round(kelly_res["recommended_stake_pct"] * 100.0, 2),
+                                "is_capped": kelly_res["is_capped"],
+                                "instructions": instructions,
+                                "dutching": None,
+                                "lambdas": f"λH: {lambda_h} | λA: {lambda_a} (P: {round(p_sel*100, 1)}%)",
+                                "ai_adjustment": ai_adj_dict,
+                            })
+
+                    # 3. Over / Under 1.5 Goles
+                    elif abs(point - 1.5) < 0.05:
+                        is_over = name.lower() == "over"
+                        p_sel = p_over_15 if is_over else p_under_15
+                        sel_text = "Más de 1.5 Goles" if is_over else "Menos de 1.5 Goles"
+                        mkt_name = "Over 1.5 Goles" if is_over else "Under 1.5 Goles"
+                        fair_o = (1.0 / p_sel) if p_sel > 0 else 999.0
+                        ev_pct = ((p_sel * price) - 1.0) * 100.0
+
+                        passes_filter, _ = evaluate_opportunity_filters(
+                            odds=price,
+                            ev_percent=ev_pct,
+                            min_ev=min_ev,
+                            min_odds=min_odds,
+                            max_odds=max_odds,
+                        )
+
+                        if passes_filter:
+                            kelly_res = calculate_kelly_stake(
+                                odds=price,
+                                effective_prob=p_sel,
+                                bankroll=bankroll,
+                                kelly_fraction=kelly_k,
+                            )
+                            total_stake = kelly_res["recommended_stake"]
+
+                            instructions = (
+                                f"1. Ingresa a {bm_title}.\n"
+                                f"2. Busca el partido '{match_name}'.\n"
+                                f"3. En 'Total de Goles', selecciona '{sel_text}' a cuota actual {price} (Mínima aceptable: {round(fair_o, 2)}).\n"
+                                f"4. Coloca un stake de ${total_stake} ({round(kelly_res['recommended_stake_pct'] * 100, 1)}% del bankroll).\n"
+                                f"5. Probabilidad real Poisson: {round(p_sel * 100, 1)}% | Ventaja matemática: +{round(ev_pct, 2)}%."
+                            )
+
+                            opportunities.append({
+                                "sport": "Fútbol",
+                                "tournament": sport_meta.get("name", "Fútbol"),
+                                "match": match_name,
+                                "commence_time": event.get("commence_time", ""),
+                                "market": mkt_name,
+                                "selection": sel_text,
+                                "bookmaker": bm_title,
+                                "odds": round(price, 2),
+                                "fair_odds": round(fair_o, 2),
+                                "effective_prob_pct": round(p_sel * 100.0, 1),
+                                "ev_percent": round(ev_pct, 2),
+                                "recommended_stake": total_stake,
+                                "recommended_stake_pct": round(kelly_res["recommended_stake_pct"] * 100.0, 2),
+                                "is_capped": kelly_res["is_capped"],
+                                "instructions": instructions,
+                                "dutching": None,
+                                "lambdas": f"λH: {lambda_h} | λA: {lambda_a} (P: {round(p_sel*100, 1)}%)",
+                                "ai_adjustment": ai_adj_dict,
+                            })
+
+            # 4. Ambos Equipos Marcan (BTTS)
+            elif m_key in ("btts", "both_teams_to_score"):
+                for out in m.get("outcomes", []):
+                    name = out.get("name", "")
+                    price = float(out.get("price", 0.0))
+                    if price <= 1.0:
+                        continue
+                    is_yes = name.lower() in ("yes", "sí", "si")
+                    p_sel = p_btts_yes if is_yes else p_btts_no
+                    sel_text = "Ambos Marcan: Sí" if is_yes else "Ambos Marcan: No"
+                    fair_o = (1.0 / p_sel) if p_sel > 0 else 999.0
+                    ev_pct = ((p_sel * price) - 1.0) * 100.0
+
+                    passes_filter, _ = evaluate_opportunity_filters(
+                        odds=price,
+                        ev_percent=ev_pct,
+                        min_ev=min_ev,
+                        min_odds=min_odds,
+                        max_odds=max_odds,
+                    )
+
+                    if passes_filter:
+                        kelly_res = calculate_kelly_stake(
+                            odds=price,
+                            effective_prob=p_sel,
+                            bankroll=bankroll,
+                            kelly_fraction=kelly_k,
+                        )
+                        total_stake = kelly_res["recommended_stake"]
+
+                        instructions = (
+                            f"1. Ingresa a {bm_title}.\n"
+                            f"2. Busca el partido '{match_name}'.\n"
+                            f"3. En 'Ambos Equipos Anotan', selecciona '{sel_text}' a cuota actual {price} (Mínima aceptable: {round(fair_o, 2)}).\n"
+                            f"4. Coloca un stake de ${total_stake} ({round(kelly_res['recommended_stake_pct'] * 100, 1)}% del bankroll).\n"
+                            f"5. Probabilidad real Poisson: {round(p_sel * 100, 1)}% | Ventaja matemática: +{round(ev_pct, 2)}%."
+                        )
+
+                        opportunities.append({
+                            "sport": "Fútbol",
+                            "tournament": sport_meta.get("name", "Fútbol"),
+                            "match": match_name,
+                            "commence_time": event.get("commence_time", ""),
+                            "market": "Ambos Equipos Marcan",
+                            "selection": sel_text,
+                            "bookmaker": bm_title,
+                            "odds": round(price, 2),
+                            "fair_odds": round(fair_o, 2),
+                            "effective_prob_pct": round(p_sel * 100.0, 1),
+                            "ev_percent": round(ev_pct, 2),
+                            "recommended_stake": total_stake,
+                            "recommended_stake_pct": round(kelly_res["recommended_stake_pct"] * 100.0, 2),
+                            "is_capped": kelly_res["is_capped"],
+                            "instructions": instructions,
+                            "dutching": None,
+                            "lambdas": f"λH: {lambda_h} | λA: {lambda_a} (P: {round(p_sel*100, 1)}%)",
+                            "ai_adjustment": ai_adj_dict,
+                        })
 
     return opportunities

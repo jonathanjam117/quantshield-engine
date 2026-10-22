@@ -117,6 +117,12 @@ from etl.odds_api_client import fetch_odds, get_available_sports
 from models.soccer_engine import analyze_soccer_match
 from models.tennis_engine import analyze_tennis_match
 from models.nba_engine import analyze_nba_match
+from models.parlay_engine import (
+    calculate_parlay,
+    find_best_auto_parlay,
+    evaluate_corners_poisson,
+    calculate_poisson_advanced_markets,
+)
 from models.ai_context_agent import (
     TacticalAdjustment,
     evaluar_contexto_partido,
@@ -491,8 +497,10 @@ st.sidebar.info(
 # ==============================================================================
 # MAIN TABS INTERFACE
 # ==============================================================================
-tab_scanner, tab_audit, tab_telegram, tab_simulator = st.tabs([
+tab_scanner, tab_parlays, tab_props, tab_audit, tab_telegram, tab_simulator = st.tabs([
     "🎯 Escáner en Vivo (+EV Finder)",
+    "🚀 Creador de Combinadas (+EV Parlays)",
+    "⚽ Mercados de Goles & Córners (Bet Builder)",
     "📈 Contabilidad & Auditoría (SQLite)",
     "📲 Alertas Móviles (Telegram)",
     "🧪 Simulador Histórico (Backtesting)",
@@ -1005,6 +1013,307 @@ with tab_scanner:
                     )
                     st.toast(f"✅ ¡Apuesta #{new_id} ({col_bm_selected}) registrada en quantshield.db!", icon="💾")
                     st.success(f"Apuesta guardada con éxito en la base de datos (ID #{new_id} - {col_bm_selected}). Puedes auditarla en la pestaña de Contabilidad.")
+
+    # Persist session state for Parlay Builder & Prop Tools
+    st.session_state.current_opportunities = detected_opportunities
+    st.session_state.current_events = events
+    st.session_state.current_fixtures = all_fixture_rows
+
+    if len(detected_opportunities) >= 2:
+        st.markdown("---")
+        st.info(
+            f"💡 **Multiplicador de Retorno:** Se detectaron **{len(detected_opportunities)} apuestas con ventaja matemática**. "
+            "¡Pasa a la pestaña **'🚀 Creador de Combinadas (+EV Parlays)'** para ver la Super-Combinada recomendada o armar tu propio parlay!"
+        )
+
+# ------------------------------------------------------------------------------
+# TAB: CREADOR DE COMBINADAS (+EV PARLAYS)
+# ------------------------------------------------------------------------------
+with tab_parlays:
+    st.subheader("🚀 Creador Cuantitativo de Combinadas (+EV Parlay Builder)")
+    st.markdown(
+        "Arma apuestas combinadas (parlays / acumuladas) multiplicando únicamente selecciones que individualmente tienen ventaja matemática (+EV). "
+        "QuantShield calcula la **cuota multiplicada**, la **probabilidad real compuesta**, el **EV compuesto** y el **stake seguro con el criterio de Kelly ajustado a la varianza**."
+    )
+
+    opps_for_parlay = st.session_state.get("current_opportunities", detected_opportunities)
+
+    if not opps_for_parlay or len(opps_for_parlay) < 2:
+        st.info(
+            "ℹ️ Para armar una combinada con ventaja matemática se requieren al menos **2 apuestas con valor (+EV)** detectadas en el escáner. "
+            "Ejecuta el escáner en la pestaña anterior o prueba relajando los filtros (EV mínimo o rango de cuotas)."
+        )
+    else:
+        # A. SUPER-COMBINADA DEL DÍA
+        st.markdown("### ⭐ Super-Combinada Óptima del Día (+EV)")
+        st.caption("El algoritmo selecciona automáticamente las 2 mejores oportunidades de partidos diferentes con mayor valor matemático:")
+
+        auto_parlay = find_best_auto_parlay(opps_for_parlay, bankroll=bankroll_val, kelly_multiplier=kelly_multiplier, num_legs=2)
+        if auto_parlay:
+            with st.container(border=True):
+                c_sb1, c_sb2, c_sb3, c_sb4 = st.columns(4)
+                c_sb1.metric("Cuota Combinada", f"@{auto_parlay['combined_odds']:.2f}", help="Cuota total multiplicada")
+                c_sb2.metric("Probabilidad Real", f"{auto_parlay['combined_prob_pct']}%", help=f"Cuota Justa: @{auto_parlay['fair_odds']:.2f}")
+                c_sb3.metric("Ventaja Compuesta (+EV)", f"+{auto_parlay['compound_ev_pct']:.2f}%", help="Esperanza matemática multiplicada")
+                c_sb4.metric("Stake Seguro", format_money(auto_parlay['recommended_stake'], selected_curr_code), help=f"{auto_parlay['recommended_stake_pct']}% del bankroll (Kelly con tope por varianza)")
+
+                st.markdown("##### 📋 Selecciones que integran la Combinada:")
+                legs_df = []
+                for idx_leg, leg in enumerate(auto_parlay['legs']):
+                    legs_df.append({
+                        "Leg": f"#{idx_leg+1}",
+                        "Partido": leg["match"],
+                        "Mercado": leg["market"],
+                        "Selección": leg["selection"],
+                        "Casa Colombia": leg["bookmaker"],
+                        "Cuota": f"{leg['odds']:.2f}",
+                        "EV Individual": f"+{leg['ev_percent']:.2f}%",
+                    })
+                st.dataframe(pd.DataFrame(legs_df), use_container_width=True, hide_index=True)
+
+                c_prof1, c_prof2 = st.columns([2, 1])
+                with c_prof1:
+                    st.markdown(
+                        f"💰 **Retorno Potencial:** Ganancia neta de **{format_money(auto_parlay['potential_profit'], selected_curr_code)}** "
+                        f"(Cobro total: {format_money(auto_parlay['potential_total_payout'], selected_curr_code)}) invirtiendo {format_money(auto_parlay['recommended_stake'], selected_curr_code)}."
+                    )
+                with c_prof2:
+                    if st.button("💾 Guardar Super-Combinada en SQLite", key="save_auto_parlay_btn", use_container_width=True):
+                        legs_desc = " + ".join([f"{l['match']} ({l['selection']} @{l['odds']})" for l in auto_parlay['legs']])
+                        col_house = auto_parlay['legs'][0]['bookmaker']
+                        new_parlay_id = add_bet(
+                            sport="Combinada / Parlay",
+                            tournament="Multi-Torneo (+EV)",
+                            match=" // ".join([l['match'] for l in auto_parlay['legs']]),
+                            market="Combinada +EV",
+                            selection=f"Combo {len(auto_parlay['legs'])} legs: " + " & ".join([l['selection'] for l in auto_parlay['legs']]),
+                            bookmaker=col_house,
+                            odds=auto_parlay['combined_odds'],
+                            fair_odds=auto_parlay['fair_odds'],
+                            ev_percent=auto_parlay['compound_ev_pct'],
+                            stake=auto_parlay['recommended_stake'],
+                            status="Pendiente",
+                            notes=f"Super-Combinada de Valor del Día. Legs: {legs_desc}",
+                            ai_analysis=f"Combinada de {len(auto_parlay['legs'])} selecciones con ventaja matemática. Probabilidad real: {auto_parlay['combined_prob_pct']}%.",
+                        )
+                        st.toast(f"✅ ¡Super-Combinada #{new_parlay_id} guardada en SQLite!", icon="💾")
+                        st.success(f"¡Combinada #{new_parlay_id} registrada con éxito! Puedes auditarla en la pestaña de Contabilidad.")
+
+        st.markdown("---")
+        # B. CONSTRUCTOR MANUAL DE COMBINADAS
+        st.markdown("### 🛠️ Constructor Manual de Combinadas")
+        st.caption("Elige tú mismo qué selecciones de la cartelera deseas combinar en tu casa de apuestas favorita (BetPlay, Rushbet, Wplay, Bwin):")
+
+        opp_labels = [
+            f"#{i+1} | {o['match']} — {o['selection']} ({o['market']}) @{o['odds']} [{o['bookmaker']}] (+{o['ev_percent']}%)"
+            for i, o in enumerate(opps_for_parlay)
+        ]
+        chosen_labels = st.multiselect(
+            "Selecciona 2 o más apuestas para combinar:",
+            options=opp_labels,
+            default=opp_labels[:2] if len(opp_labels) >= 2 else [],
+        )
+
+        if len(chosen_labels) >= 2:
+            chosen_opps = [opps_for_parlay[opp_labels.index(lbl)] for lbl in chosen_labels]
+            custom_res = calculate_parlay(chosen_opps, bankroll=bankroll_val, kelly_multiplier=kelly_multiplier)
+
+            if custom_res:
+                if custom_res["has_duplicate_matches"]:
+                    st.warning(
+                        "⚠️ **Nota sobre Mismo Partido (Bet Builder):** Has seleccionado dos o más mercados del mismo partido. "
+                        "Para apostar esto en BetPlay o Rushbet, debes ingresar al partido y usar la función **'Crea tu Apuesta / Bet Builder'**, "
+                        "ya que las apuestas dentro del mismo juego tienen correlación.",
+                        icon="⚠️"
+                    )
+
+                with st.container(border=True):
+                    c_cr1, c_cr2, c_cr3, c_cr4 = st.columns(4)
+                    c_cr1.metric("Cuota Combinada", f"@{custom_res['combined_odds']:.2f}")
+                    c_cr2.metric("Probabilidad Compuesta", f"{custom_res['combined_prob_pct']}%", help=f"Cuota Justa: @{custom_res['fair_odds']:.2f}")
+                    c_cr3.metric("EV Compuesto", f"+{custom_res['compound_ev_pct']:.2f}%")
+                    c_cr4.metric("Stake Sugerido", format_money(custom_res['recommended_stake'], selected_curr_code), help=f"{custom_res['recommended_stake_pct']}% del bankroll")
+
+                    st.markdown(
+                        f"💵 **Ganancia Neta si aciertas:** **{format_money(custom_res['potential_profit'], selected_curr_code)}** "
+                        f"(Cobro total: {format_money(custom_res['potential_total_payout'], selected_curr_code)})."
+                    )
+
+                    c_bm_pick, c_btn_save = st.columns([1.5, 1])
+                    with c_bm_pick:
+                        parlay_bm_chosen = st.selectbox(
+                            "Casa de Apuestas para colocar la combinada:",
+                            options=["BetPlay", "Rushbet", "Wplay", "Bwin Colombia", "Codere", "Betsson"],
+                            key="parlay_manual_bm_select",
+                        )
+                    with c_btn_save:
+                        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                        if st.button("💾 Guardar Combinada en SQLite", key="save_custom_parlay_btn", use_container_width=True):
+                            legs_desc = " + ".join([f"{l['match']} ({l['selection']} @{l['odds']})" for l in custom_res['legs']])
+                            new_c_id = add_bet(
+                                sport="Combinada / Parlay",
+                                tournament="Personalizada (+EV)",
+                                match=" // ".join([l['match'] for l in custom_res['legs']]),
+                                market="Combinada +EV",
+                                selection=f"Combo {len(custom_res['legs'])} legs: " + " & ".join([l['selection'] for l in custom_res['legs']]),
+                                bookmaker=parlay_bm_chosen,
+                                odds=custom_res['combined_odds'],
+                                fair_odds=custom_res['fair_odds'],
+                                ev_percent=custom_res['compound_ev_pct'],
+                                stake=custom_res['recommended_stake'],
+                                status="Pendiente",
+                                notes=f"Combinada Personalizada. Legs: {legs_desc}",
+                                ai_analysis=f"Combinada personalizada de {len(custom_res['legs'])} selecciones. Probabilidad real: {custom_res['combined_prob_pct']}%.",
+                            )
+                            st.toast(f"✅ ¡Combinada #{new_c_id} guardada en SQLite!", icon="💾")
+                            st.success(f"¡Combinada #{new_c_id} registrada con éxito en tu base de datos!")
+        else:
+            st.info("👆 Selecciona al menos 2 apuestas arriba para calcular las métricas combinadas.")
+
+# ------------------------------------------------------------------------------
+# TAB: MERCADOS DE GOLES & CÓRNERS (BET BUILDER)
+# ------------------------------------------------------------------------------
+with tab_props:
+    st.subheader("⚽ Mercados de Goles & Córners (Bet Builder)")
+    st.markdown(
+        "Herramientas cuantitativas para mercados secundarios: tiros de esquina (córners), "
+        "ambos equipos marcan (BTTS) y combinaciones dentro de un mismo partido con modelos de Poisson bivariado."
+    )
+
+    tab_sub_corners, tab_sub_goals = st.tabs([
+        "🚩 Calculadora de Tiros de Esquina (Córners)",
+        "🎯 Guía de Goles & Bet Builder (Mismo Partido)",
+    ])
+
+    with tab_sub_corners:
+        st.markdown("#### 🚩 Calculadora Cuantitativa de Córners (Tiros de Esquina)")
+        st.caption(
+            "Compara las cuotas de córners que ves en tu app de BetPlay, Rushbet o Wplay contra la distribución Poisson de tiros de esquina "
+            "para saber si tienen valor matemático positivo (+EV) o si son una trampa de la casa."
+        )
+
+        c_c1, c_c2, c_c3 = st.columns(3)
+        with c_c1:
+            corner_league = st.selectbox(
+                "Competición:",
+                options=["Colombia - Liga BetPlay", "UEFA Champions League", "Premier League (Inglaterra)", "La Liga (España)", "Otra Liga"],
+            )
+        with c_c2:
+            default_lam = 9.4 if "Colombia" in corner_league else (10.2 if "Premier" in corner_league else 9.8)
+            exp_corners = st.number_input(
+                "Promedio Total de Córners Esperados:",
+                min_value=5.0,
+                max_value=16.0,
+                value=float(default_lam),
+                step=0.1,
+                help="Promedio histórico de córners en este torneo o entre ambos equipos.",
+            )
+        with c_c3:
+            corner_line = st.selectbox(
+                "Línea de Córners de la Casa:",
+                options=[7.5, 8.5, 9.5, 10.5, 11.5],
+                index=2,  # 9.5
+                help="Línea que te ofrece BetPlay o Rushbet (ej. Más de 9.5 / Menos de 9.5)",
+            )
+
+        c_c4, c_c5, c_c6 = st.columns(3)
+        with c_c4:
+            c_odds_over = st.number_input(
+                f"Cuota 'Más de {corner_line}' (Over):",
+                min_value=1.05,
+                max_value=10.0,
+                value=1.90,
+                step=0.01,
+            )
+        with c_c5:
+            c_odds_under = st.number_input(
+                f"Cuota 'Menos de {corner_line}' (Under):",
+                min_value=1.05,
+                max_value=10.0,
+                value=1.85,
+                step=0.01,
+            )
+        with c_c6:
+            c_house = st.selectbox(
+                "Casa de Apuestas:",
+                options=["BetPlay", "Rushbet", "Wplay", "Bwin Colombia"],
+                key="corner_house_sel",
+            )
+
+        corners_eval = evaluate_corners_poisson(
+            expected_total_corners=exp_corners,
+            line=corner_line,
+            odds_over=c_odds_over,
+            odds_under=c_odds_under,
+            bankroll=bankroll_val,
+        )
+
+        st.markdown("##### 📊 Diagnóstico del Modelo Poisson de Córners:")
+        c_res1, c_res2, c_res3, c_res4 = st.columns(4)
+        c_res1.metric(f"Prob. Más de {corner_line}", f"{corners_eval['p_over_pct']}%", help=f"Cuota Justa: @{corners_eval['fair_odds_over']}")
+        c_res2.metric(f"EV Más de {corner_line}", f"{corners_eval['ev_over_pct']:+.2f}%")
+        c_res3.metric(f"Prob. Menos de {corner_line}", f"{corners_eval['p_under_pct']}%", help=f"Cuota Justa: @{corners_eval['fair_odds_under']}")
+        c_res4.metric(f"EV Menos de {corner_line}", f"{corners_eval['ev_under_pct']:+.2f}%")
+
+        if corners_eval["has_value"]:
+            st.success(
+                f"🟢 **¡VENTAJA MATEMÁTICA DETECTADA!**\n\n"
+                f"• **Apuesta recomendada:** `{corners_eval['best_selection']}` a cuota **@{corners_eval['best_odds']}** en **{c_house}**.\n"
+                f"• **Cuota Justa:** @{corners_eval['best_fair']} (Probabilidad real de acierto: {corners_eval['best_prob']}%).\n"
+                f"• **Ventaja sobre la casa (+EV):** +{corners_eval['best_ev']}%."
+            )
+        else:
+            st.warning(
+                f"⚪ **Sin Ventaja Matemática (Margen Casa):**\n\n"
+                f"Tanto la cuota de 'Más de' ({c_odds_over}) como la de 'Menos de' ({c_odds_under}) están por debajo de sus cuotas justas (@{corners_eval['fair_odds_over']} y @{corners_eval['fair_odds_under']}). "
+                f"El margen de {c_house} en esta línea es alto. **No se recomienda apostar.**"
+            )
+
+    with tab_sub_goals:
+        st.markdown("#### 🎯 Guía Cuantitativa de Mercados de Goles & Bet Builder")
+        st.caption("Consulta las probabilidades reales y cuotas justas de todos los mercados de goles calculados por la matriz Poisson 9x9.")
+
+        events_for_props = st.session_state.get("current_events", events)
+        if not events_for_props:
+            st.info("ℹ️ No hay partidos cargados actualmente. Ejecuta el escáner para ver la cartelera.")
+        else:
+            event_match_options = [f"{e.get('home_team', '')} vs {e.get('away_team', '')}" for e in events_for_props]
+            sel_match_prop = st.selectbox("Seleccionar Partido para ver Mercados Derivados:", event_match_options)
+            chosen_event_prop = next((e for e in events_for_props if f"{e.get('home_team', '')} vs {e.get('away_team', '')}" == sel_match_prop), None)
+
+            if chosen_event_prop:
+                props_data = chosen_event_prop.get("advanced_poisson_props")
+                if not props_data:
+                    props_data = calculate_poisson_advanced_markets(lambda_h=1.35, lambda_a=1.05)
+
+                st.markdown(
+                    f"**Goles Esperados (xG):** Local: `{props_data.get('lambda_h', 1.35)}` | Visita: `{props_data.get('lambda_a', 1.05)}` | "
+                    f"Total Partido: `{props_data.get('expected_total_goals', 2.40)}` goles"
+                )
+
+                col_p1, col_p2 = st.columns(2)
+                with col_p1:
+                    st.markdown("##### ⚽ Mercados de Ambos Marcan & Totales:")
+                    goals_table = [
+                        {"Mercado": "Ambos Equipos Anotan: SÍ", "Probabilidad": f"{props_data['btts_yes_prob']}%", "Cuota Justa Mínima": f"@{props_data['btts_yes_fair_odds']}"},
+                        {"Mercado": "Ambos Equipos Anotan: NO", "Probabilidad": f"{props_data['btts_no_prob']}%", "Cuota Justa Mínima": f"@{props_data['btts_no_fair_odds']}"},
+                        {"Mercado": "Más de 1.5 Goles", "Probabilidad": f"{props_data['over_15_prob']}%", "Cuota Justa Mínima": f"@{props_data['over_15_fair_odds']}"},
+                        {"Mercado": "Menos de 1.5 Goles", "Probabilidad": f"{props_data['under_15_prob']}%", "Cuota Justa Mínima": f"@{props_data['under_15_fair_odds']}"},
+                        {"Mercado": "Más de 2.5 Goles", "Probabilidad": f"{props_data['over_25_prob']}%", "Cuota Justa Mínima": f"@{props_data['over_25_fair_odds']}"},
+                        {"Mercado": "Menos de 2.5 Goles", "Probabilidad": f"{props_data['under_25_prob']}%", "Cuota Justa Mínima": f"@{props_data['under_25_fair_odds']}"},
+                        {"Mercado": "Más de 3.5 Goles", "Probabilidad": f"{props_data['over_35_prob']}%", "Cuota Justa Mínima": f"@{props_data['over_35_fair_odds']}"},
+                    ]
+                    st.dataframe(pd.DataFrame(goals_table), use_container_width=True, hide_index=True)
+
+                with col_p2:
+                    st.markdown("##### 🧩 Combos Mismo Partido (Bet Builder):")
+                    combos_table = [
+                        {"Combo Bet Builder": "Local Gana Y Más de 1.5 Goles", "Probabilidad": f"{props_data['combo_home_over15_prob']}%", "Cuota Justa Mínima": f"@{props_data['combo_home_over15_fair_odds']}"},
+                        {"Combo Bet Builder": "Local Gana Y Ambos Anotan", "Probabilidad": f"{props_data['combo_home_btts_prob']}%", "Cuota Justa Mínima": f"@{props_data['combo_home_btts_fair_odds']}"},
+                        {"Combo Bet Builder": "Empate Y Menos de 2.5 Goles", "Probabilidad": f"{props_data['combo_draw_under25_prob']}%", "Cuota Justa Mínima": f"@{props_data['combo_draw_under25_fair_odds']}"},
+                    ]
+                    st.dataframe(pd.DataFrame(combos_table), use_container_width=True, hide_index=True)
+                    st.caption("💡 **Cómo usar esto en BetPlay o Rushbet:** En la app de tu casa, usa la opción 'Crea tu Apuesta'. Si la cuota que te ofrece la casa es MAYOR a la Cuota Justa Mínima de la tabla, tienes una apuesta con ventaja matemática positiva (+EV).")
 
 # ------------------------------------------------------------------------------
 # TAB 2: CONTABILIDAD, BANKROLL Y AUDITORÍA (SQLite + Plotly)
