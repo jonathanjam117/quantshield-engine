@@ -272,6 +272,82 @@ def get_simulation_events(sport_key: str) -> List[Dict[str, Any]]:
                     },
                 ],
             },
+            {
+                "id": "col_match_3",
+                "sport_key": "soccer_colombia_primera_a",
+                "sport_title": "Liga BetPlay Dimayor",
+                "commence_time": d3,
+                "home_team": "América de Cali",
+                "away_team": "Deportivo Cali",
+                "bookmakers": [
+                    {
+                        "key": "pinnacle",
+                        "title": "Pinnacle",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "América de Cali", "price": 2.10},
+                                    {"name": "Draw", "price": 3.10},
+                                    {"name": "Deportivo Cali", "price": 3.60},
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "key": "bet365",
+                        "title": "BetPlay",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "América de Cali", "price": 2.05},
+                                    {"name": "Draw", "price": 3.05},
+                                    {"name": "Deportivo Cali", "price": 3.50},
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            },
+            {
+                "id": "col_match_4",
+                "sport_key": "soccer_colombia_primera_a",
+                "sport_title": "Liga BetPlay Dimayor",
+                "commence_time": d3,
+                "home_team": "Independiente Medellín",
+                "away_team": "Once Caldas",
+                "bookmakers": [
+                    {
+                        "key": "pinnacle",
+                        "title": "Pinnacle",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "Independiente Medellín", "price": 1.95},
+                                    {"name": "Draw", "price": 3.20},
+                                    {"name": "Once Caldas", "price": 3.90},
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "key": "betano",
+                        "title": "Rushbet",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "Independiente Medellín", "price": 1.90},
+                                    {"name": "Draw", "price": 3.15},
+                                    {"name": "Once Caldas", "price": 3.80},
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            },
         ]
 
     elif sport_key == "soccer_netherlands_eredivisie":
@@ -374,6 +450,110 @@ def get_simulation_events(sport_key: str) -> List[Dict[str, Any]]:
                                 "outcomes": [
                                     {"name": "Over", "point": 2.0, "price": 1.68},
                                     {"name": "Under", "point": 2.0, "price": 2.30},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            {
+                "id": "ned_match_3",
+                "sport_key": "soccer_netherlands_eredivisie",
+                "sport_title": "Dutch Eredivisie",
+                "commence_time": d3,
+                "home_team": "FC Twente",
+                "away_team": "FC Utrecht",
+                "bookmakers": [
+                    {
+                        "key": "pinnacle",
+                        "title": "Pinnacle",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "FC Twente", "price": 1.95},
+                                    {"name": "Draw", "price": 3.50},
+                                    {"name": "FC Utrecht", "price": 3.80},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "point": 2.0, "price": 1.65},
+                                    {"name": "Under", "point": 2.0, "price": 2.20},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "key": "bet365",
+                        "title": "BetPlay",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "FC Twente", "price": 1.90},  # No EV
+                                    {"name": "Draw", "price": 3.40},
+                                    {"name": "FC Utrecht", "price": 3.75},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "point": 2.0, "price": 1.60},
+                                    {"name": "Under", "point": 2.0, "price": 2.15},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            {
+                "id": "ned_match_4",
+                "sport_key": "soccer_netherlands_eredivisie",
+                "sport_title": "Dutch Eredivisie",
+                "commence_time": d3,
+                "home_team": "SC Heerenveen",
+                "away_team": "Sparta Rotterdam",
+                "bookmakers": [
+                    {
+                        "key": "pinnacle",
+                        "title": "Pinnacle",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "SC Heerenveen", "price": 2.20},
+                                    {"name": "Draw", "price": 3.40},
+                                    {"name": "Sparta Rotterdam", "price": 3.20},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "point": 2.0, "price": 1.70},
+                                    {"name": "Under", "point": 2.0, "price": 2.10},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "key": "betfair",
+                        "title": "Wplay",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "SC Heerenveen", "price": 2.15},  # No EV
+                                    {"name": "Draw", "price": 3.30},
+                                    {"name": "Sparta Rotterdam", "price": 3.10},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "point": 2.0, "price": 1.65},
+                                    {"name": "Under", "point": 2.0, "price": 2.05},
                                 ],
                             },
                         ],

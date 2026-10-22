@@ -130,7 +130,7 @@ st.set_page_config(
     page_title="QuantShield Engine | +EV & Low-Variance",
     page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 # ============================================================
@@ -270,32 +270,25 @@ st.markdown(
     .live-indicator { animation: pulse-green 2s infinite; }
 
     /* === HIDE STREAMLIT BRANDING (PRESERVING SIDEBAR TOGGLE ON MOBILE) === */
-    #MainMenu  { visibility: hidden !important; }
-    footer     { visibility: hidden !important; }
+    #MainMenu  { display: none !important; }
+    footer     { display: none !important; }
     div[data-testid="stDecoration"] { display: none !important; }
-    div[data-testid="stToolbar"]    { display: none !important; }
 
-    header, [data-testid="stHeader"] {
+    /* Ensure header remains functional for mobile sidebar navigation */
+    header[data-testid="stHeader"] {
         background: transparent !important;
-        visibility: visible !important;
-        height: 3rem !important;
     }
 
-    /* Make the mobile sidebar toggle button prominent, high-contrast and easily tappable */
-    div[data-testid="stSidebarCollapsedControl"],
-    div[data-testid="collapsedControl"],
-    button[data-testid="stBaseButton-header"] {
-        visibility: visible !important;
-        display: flex !important;
-        background-color: #1e293b !important;
-        border-radius: 8px !important;
-        border: 1.5px solid #3b82f6 !important;
-        z-index: 9999999 !important;
-        box-shadow: 0 2px 10px rgba(59, 130, 246, 0.45) !important;
-    }
-    div[data-testid="stSidebarCollapsedControl"] button,
-    div[data-testid="collapsedControl"] button {
-        color: #60a5fa !important;
+    /* Make mobile sidebar button prominent on mobile devices */
+    @media (max-width: 768px) {
+        div[data-testid="stSidebarCollapsedControl"] {
+            display: flex !important;
+            visibility: visible !important;
+            background-color: #1e293b !important;
+            border-radius: 8px !important;
+            border: 1.5px solid #3b82f6 !important;
+            box-shadow: 0 2px 10px rgba(59, 130, 246, 0.5) !important;
+        }
     }
     </style>
     """,
@@ -576,6 +569,7 @@ with tab_scanner:
 
     # Process events with mathematical models and Gemini AI context
     detected_opportunities: List[Dict[str, Any]] = []
+    all_fixture_rows: List[Dict[str, Any]] = []
 
     # Initialize session state for AI adjustments and breaking news
     if "match_ai_adjustments" not in st.session_state:
@@ -588,6 +582,23 @@ with tab_scanner:
         home_team = event.get("home_team", "")
         away_team = event.get("away_team", "")
         match_key = f"{home_team} vs {away_team}"
+
+        # Extract 1X2 odds for fixture overview
+        h_price, x_price, a_price, ref_bm = "-", "-", "-", "BetPlay / Wplay"
+        for bm in event.get("bookmakers", []):
+            for m in bm.get("markets", []):
+                if m.get("key") == "h2h":
+                    for o in m.get("outcomes", []):
+                        if o.get("name") == home_team:
+                            h_price = f"{o.get('price', 0):.2f}"
+                        elif o.get("name") in ("Draw", "Empate", "X"):
+                            x_price = f"{o.get('price', 0):.2f}"
+                        elif o.get("name") == away_team:
+                            a_price = f"{o.get('price', 0):.2f}"
+                    ref_bm = bm.get("title", bm.get("key", "Ref"))
+                    break
+            if h_price != "-":
+                break
 
         # Evaluate Gemini AI tactical context if enabled
         ai_adj = None
@@ -617,8 +628,9 @@ with tab_scanner:
                 )
                 st.session_state.match_ai_adjustments[match_key] = ai_adj
 
+        event_opps: List[Dict[str, Any]] = []
         if sport_type in ("goals", "dnb", "intl"):
-            opps = analyze_soccer_match(
+            event_opps = analyze_soccer_match(
                 event=event,
                 sport_meta=selected_meta,
                 bankroll=bankroll_val,
@@ -628,10 +640,10 @@ with tab_scanner:
                 max_odds=odds_range[1],
                 ai_adjustment=ai_adj,
             )
-            detected_opportunities.extend(opps)
+            detected_opportunities.extend(event_opps)
 
         elif sport_type == "tennis":
-            opps = analyze_tennis_match(
+            event_opps = analyze_tennis_match(
                 event=event,
                 sport_meta=selected_meta,
                 bankroll=bankroll_val,
@@ -641,10 +653,10 @@ with tab_scanner:
                 max_odds=odds_range[1],
                 ai_adjustment=ai_adj,
             )
-            detected_opportunities.extend(opps)
+            detected_opportunities.extend(event_opps)
 
         elif sport_type == "nba":
-            opps = analyze_nba_match(
+            event_opps = analyze_nba_match(
                 event=event,
                 sport_meta=selected_meta,
                 bankroll=bankroll_val,
@@ -654,40 +666,88 @@ with tab_scanner:
                 max_odds=odds_range[1],
                 ai_adjustment=ai_adj,
             )
-            detected_opportunities.extend(opps)
+            detected_opportunities.extend(event_opps)
+
+        if event_opps:
+            best_ev = max(event_opps, key=lambda x: x["ev_percent"])
+            verdict = f"🟢 +EV: {best_ev['market']} (+{best_ev['ev_percent']:.1f}%)"
+            has_val = True
+        else:
+            verdict = "⚪ Sin Ventaja (Margen Casa)"
+            has_val = False
+
+        all_fixture_rows.append({
+            "Fecha/Hora (Local)": format_short_local_time(event.get("commence_time", "")),
+            "Partido": match_key,
+            "1 (Local)": h_price,
+            "X (Empate)": x_price,
+            "2 (Visita)": a_price,
+            "Casa Ref": ref_bm,
+            "Diagnóstico QuantShield": verdict,
+            "_has_value": has_val,
+        })
 
     # Sort by EV (%) descending
     detected_opportunities.sort(key=lambda x: x["ev_percent"], reverse=True)
+
+    # View Mode Selector: Solo Oportunidades vs Cartelera Completa
+    c_view1, c_view2 = st.columns([1.8, 1])
+    with c_view1:
+        view_mode = st.radio(
+            "Seleccionar Vista:",
+            options=["🎯 Solo Apuestas Recomendadas (+EV)", "📋 Cartelera Completa (Todos los Partidos de la Fecha)"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+    with c_view2:
+        val_count = len(detected_opportunities)
+        tot_count = len(events)
+        st.markdown(
+            f"<div style='text-align: right; padding-top: 6px;'>"
+            f"<span style='background-color: #059669; color: white; padding: 4px 10px; border-radius: 12px; font-weight: 700; font-size: 0.85em;'>"
+            f"🟢 {val_count} con Valor</span> "
+            f"<span style='background-color: #475569; color: white; padding: 4px 10px; border-radius: 12px; font-weight: 600; font-size: 0.85em;'>"
+            f"⚪ {tot_count - val_count} Sin Ventaja</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    if "Cartelera Completa" in view_mode:
+        st.markdown("##### 📋 Cartelera Completa de la Fecha & Diagnóstico:")
+        st.caption("A continuación se evalúan todos los partidos programados de la competición. Solo los partidos marcados con **🟢 +EV** tienen ventaja matemática a tu favor; los partidos marcados con **⚪ Sin Ventaja** tienen cuotas que favorecen a la casa.")
+        clean_df = pd.DataFrame(all_fixture_rows).drop(columns=["_has_value"], errors="ignore")
+        st.dataframe(clean_df, use_container_width=True, hide_index=True)
 
     if not detected_opportunities:
         st.info(
             "ℹ️ No se detectaron oportunidades con los filtros actuales "
             f"(EV >= {min_ev_filter}%, Cuotas entre {odds_range[0]} y {odds_range[1]}). "
-            "Prueba relajando los filtros en la barra lateral o seleccionando otra competición."
+            "Revisa la pestaña de 'Cartelera Completa' para ver los partidos evaluados o prueba relajando los filtros en la barra lateral."
         )
     else:
-        st.success(
-            f"✅ Se encontraron **{len(detected_opportunities)} oportunidades** con Esperanza Matemática Positiva (+EV)."
-        )
+        if "Cartelera Completa" not in view_mode:
+            st.success(
+                f"✅ Se encontraron **{len(detected_opportunities)} oportunidades** con Esperanza Matemática Positiva (+EV)."
+            )
 
-        # Overview Table
-        summary_rows = []
-        for i, opp in enumerate(detected_opportunities):
-            summary_rows.append({
-                "#": i + 1,
-                "Fecha/Hora (Local)": format_short_local_time(opp.get("commence_time", "")),
-                "Partido": opp["match"],
-                "Mercado": opp["market"],
-                "Selección": opp["selection"],
-                "Casa": opp["bookmaker"],
-                "Cuota": f"{opp['odds']:.2f}",
-                "Cuota Justa": f"{opp['fair_odds']:.2f}",
-                "Prob. Efectiva": f"{opp['effective_prob_pct']}%",
-                "EV (%)": f"+{opp['ev_percent']:.2f}%",
-                f"Stake ({selected_curr_code})": format_money(opp['recommended_stake'], selected_curr_code),
-                "% Bankroll": f"{opp['recommended_stake_pct']}%",
-            })
-        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+            # Overview Table
+            summary_rows = []
+            for i, opp in enumerate(detected_opportunities):
+                summary_rows.append({
+                    "#": i + 1,
+                    "Fecha/Hora (Local)": format_short_local_time(opp.get("commence_time", "")),
+                    "Partido": opp["match"],
+                    "Mercado": opp["market"],
+                    "Selección": opp["selection"],
+                    "Casa": opp["bookmaker"],
+                    "Cuota": f"{opp['odds']:.2f}",
+                    "Cuota Justa": f"{opp['fair_odds']:.2f}",
+                    "Prob. Efectiva": f"{opp['effective_prob_pct']}%",
+                    "EV (%)": f"+{opp['ev_percent']:.2f}%",
+                    f"Stake ({selected_curr_code})": format_money(opp['recommended_stake'], selected_curr_code),
+                    "% Bankroll": f"{opp['recommended_stake_pct']}%",
+                })
+            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
         st.markdown("#### 📋 Tarjetas de Ejecución Paso a Paso & Seguro Sintético")
 
