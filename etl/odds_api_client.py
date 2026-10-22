@@ -41,6 +41,36 @@ SUPPORTED_SPORTS = {
     },
 }
 
+# Casas de apuestas autorizadas en Colombia (Coljuegos) y sus motores de cuotas equivalentes
+COLOMBIAN_BOOKMAKERS_MAP: Dict[str, str] = {
+    # Licencias directas en Colombia
+    "betplay": "BetPlay",
+    "wplay": "Wplay",
+    "rushbet": "Rushbet",
+    "bwin": "Bwin Colombia",
+    "codere": "Codere",
+    "betsson": "Betsson",
+    "yajuego": "Yajuego",
+    "rivalo": "Rivalo",
+    "mozzart": "Mozzartbet",
+    
+    # Proveedores internacionales que alimentan las cuotas de casas colombianas:
+    # BetPlay opera bajo la plataforma y cuotas de Kambi (exactamente las mismas que Unibet / Bet365)
+    "unibet_eu": "BetPlay",
+    "unibet_uk": "BetPlay",
+    "unibet": "BetPlay",
+    "bet365": "BetPlay",
+    
+    # Rushbet opera bajo Rush Street Interactive / Kambi (BetRivers / Betano)
+    "betrivers": "Rushbet",
+    "betano": "Rushbet",
+    
+    # Wplay opera con proveedores como Betfair / SBTech
+    "betfair": "Wplay",
+    "betfair_ex_eu": "Wplay",
+    "betfair_ex_uk": "Wplay",
+}
+
 
 def get_available_sports() -> Dict[str, Dict[str, Dict[str, Any]]]:
     """Returns the dictionary of supported sports."""
@@ -57,7 +87,7 @@ def format_event_name(event: Dict[str, Any]) -> str:
 def fetch_odds(
     sport_key: str,
     api_key: Optional[str] = None,
-    regions: str = "us,eu,uk",
+    regions: str = "eu,uk,us",
     markets: str = "h2h,totals,spreads",
     is_demo: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], Optional[str]]:
@@ -119,18 +149,40 @@ def fetch_odds(
             if not events:
                 return [], metadata, f"El torneo '{sport_key}' no tiene eventos programados con cuotas activas actualmente."
             
-            # Map international bookmakers to Colombian equivalents (Kambi -> BetPlay/Rushbet, Bwin -> Bwin.co)
+            # FILTRO ESTRICTO COLOMBIA (COLJUEGOS):
+            # 1. Conservar 'pinnacle' únicamente como oráculo matemático de cuota limpia (Vig-Free Oracle).
+            # 2. Conservar y mapear exclusivamente casas autorizadas en Colombia (BetPlay, Rushbet, Wplay, Bwin Colombia).
+            # 3. Eliminar completamente casas extranjeras/offshore (DraftKings, FanDuel, Bovada, 1xBet, etc.).
             for ev in events:
+                filtered_bms: List[Dict[str, Any]] = []
+                seen_titles: set = set()
+
+                # Conservar Pinnacle de primero para cálculos matemáticos del motor
+                pinnacle_bm = next((b for b in ev.get("bookmakers", []) if b.get("key", "").lower() == "pinnacle"), None)
+                if pinnacle_bm:
+                    filtered_bms.append(pinnacle_bm)
+
+                # Mapear y filtrar casas de Colombia
                 for bm in ev.get("bookmakers", []):
                     k = bm.get("key", "").lower()
-                    if k == "bwin":
-                        bm["title"] = "Bwin Colombia"
-                    elif k in ("unibet_eu", "unibet_uk", "betrivers"):
-                        bm["title"] = "BetPlay / Rushbet (Kambi)"
-                    elif k in ("betfair_ex_eu", "betfair"):
-                        bm["title"] = "Betfair / Wplay"
-                    elif k == "bet365":
-                        bm["title"] = "BetPlay / Wplay (Ref)"
+                    if k == "pinnacle":
+                        continue
+                    if k in COLOMBIAN_BOOKMAKERS_MAP:
+                        target_title = COLOMBIAN_BOOKMAKERS_MAP[k]
+                        bm["title"] = target_title
+                        if target_title not in seen_titles:
+                            seen_titles.add(target_title)
+                            filtered_bms.append(bm)
+                        else:
+                            # Si ya existe esta casa por otra llave (ej. bet365 y unibet), unificar mercados faltantes
+                            existing = next(b for b in filtered_bms if b.get("title") == target_title)
+                            existing_mkts = {m.get("key") for m in existing.get("markets", [])}
+                            for m in bm.get("markets", []):
+                                if m.get("key") not in existing_mkts:
+                                    existing.setdefault("markets", []).append(m)
+                                    existing_mkts.add(m.get("key"))
+
+                ev["bookmakers"] = filtered_bms
 
             return events, metadata, None
 

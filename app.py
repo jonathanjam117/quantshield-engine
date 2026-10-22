@@ -583,10 +583,15 @@ with tab_scanner:
         away_team = event.get("away_team", "")
         match_key = f"{home_team} vs {away_team}"
 
-        # Extract 1X2 odds for fixture overview
-        h_price, x_price, a_price, ref_bm = "-", "-", "-", "BetPlay / Wplay"
-        for bm in event.get("bookmakers", []):
-            for m in bm.get("markets", []):
+        # Extract 1X2 odds for fixture overview prioritizing Colombian bookmakers
+        h_price, x_price, a_price, ref_bm = "-", "-", "-", "BetPlay"
+        bms = event.get("bookmakers", [])
+        # Prefer Colombian recreational house over Pinnacle for the fixture table
+        rec_bms = [b for b in bms if b.get("key", "").lower() != "pinnacle"]
+        target_bm = rec_bms[0] if rec_bms else (bms[0] if bms else None)
+
+        if target_bm:
+            for m in target_bm.get("markets", []):
                 if m.get("key") == "h2h":
                     for o in m.get("outcomes", []):
                         if o.get("name") == home_team:
@@ -595,10 +600,9 @@ with tab_scanner:
                             x_price = f"{o.get('price', 0):.2f}"
                         elif o.get("name") == away_team:
                             a_price = f"{o.get('price', 0):.2f}"
-                    ref_bm = bm.get("title", bm.get("key", "Ref"))
+                    bm_t = target_bm.get("title", target_bm.get("key", "Ref"))
+                    ref_bm = bm_t if target_bm.get("key", "").lower() != "pinnacle" else f"{bm_t} (Ref)"
                     break
-            if h_price != "-":
-                break
 
         # Evaluate Gemini AI tactical context if enabled
         ai_adj = None
@@ -1137,7 +1141,7 @@ with tab_audit:
             with c_m2:
                 m_market = st.text_input("Mercado", value="Draw No Bet (Local)")
                 m_selection = st.text_input("Selección", value="Millonarios")
-                m_bm = st.text_input("Casa de Apuestas", value="Bet365")
+                m_bm = st.selectbox("Casa de Apuestas", ["BetPlay", "Rushbet", "Wplay", "Bwin Colombia", "Codere", "Betsson", "Yajuego", "Otra"])
             with c_m3:
                 m_odds = st.number_input("Cuota", min_value=1.01, value=1.85, step=0.01)
                 m_ev = st.number_input("EV Estimado (%)", min_value=0.0, value=4.5, step=0.1)

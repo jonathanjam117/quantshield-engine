@@ -109,6 +109,9 @@ def analyze_tennis_match(
         bm_title = bm.get("title", bm_key.capitalize())
         if bm_key == "pinnacle":
             continue
+        # Filtrar exclusivamente casas autorizadas en Colombia
+        if not any(h in bm_title for h in ("BetPlay", "Rushbet", "Wplay", "Bwin", "Codere", "Betsson", "Yajuego", "Rivalo", "Mozzart")):
+            continue
 
         for m in bm.get("markets", []):
             if m.get("key") == "h2h":

@@ -212,6 +212,9 @@ def analyze_soccer_match(
         bm_title = bm.get("title", bm_key.capitalize())
         if bm_key == "pinnacle":
             continue  # Compare recreational against oracle
+        # Filtrar exclusivamente casas autorizadas en Colombia
+        if not any(h in bm_title for h in ("BetPlay", "Rushbet", "Wplay", "Bwin", "Codere", "Betsson", "Yajuego", "Rivalo", "Mozzart")):
+            continue
 
         h2h_data = extract_vig_free_h2h(bm)
         if not h2h_data:
@@ -306,6 +309,9 @@ def analyze_soccer_match(
         bm_key = bm.get("key", "")
         bm_title = bm.get("title", bm_key.capitalize())
         if bm_key == "pinnacle":
+            continue
+        # Filtrar exclusivamente casas autorizadas en Colombia
+        if not any(h in bm_title for h in ("BetPlay", "Rushbet", "Wplay", "Bwin", "Codere", "Betsson", "Yajuego", "Rivalo", "Mozzart")):
             continue
 
         for m in bm.get("markets", []):
