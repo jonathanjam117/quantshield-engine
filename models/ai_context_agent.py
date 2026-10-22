@@ -21,13 +21,13 @@ try:
 except ImportError:
     GENAI_AVAILABLE = False
 
-# Available Gemini models for Pro tier
+# Available Gemini models for Free and Pro tiers
 GEMINI_MODELS = [
-    "gemini-3.5-flash",        # Current default recommended by Google (ultra fast, high throughput)
-    "gemini-3.1-pro-preview",  # Deep reasoning for complex tournament matches
-    "gemini-3.1-flash-lite",   # Lightweight low-latency model
-    "gemini-2.5-pro",          # Compatibility with grandfathered accounts
-    "gemini-2.5-flash",        # Compatibility with grandfathered accounts
+    "gemini-2.0-flash",        # Official free tier default (1,500 requests/day, 15 RPM)
+    "gemini-1.5-flash",        # LTS stable fallback (1,500 requests/day, 15 RPM)
+    "gemini-2.0-flash-lite",   # Ultra lightweight & low latency (30 RPM free)
+    "gemini-2.5-flash",        # Flash 2.5
+    "gemini-1.5-pro",          # Deep reasoning tier
 ]
 
 
@@ -131,7 +131,7 @@ def generar_ajuste_simulado(
     )
 
 
-def verificar_conexion_gemini(api_key: str, model_name: str = "gemini-3.5-flash") -> Dict[str, Any]:
+def verificar_conexion_gemini(api_key: str, model_name: str = "gemini-2.0-flash") -> Dict[str, Any]:
     """Tests the connection to Google Gemini API using the official google-genai SDK.
     Gracefully handles newly created API keys by automatically selecting currently available models.
 
@@ -158,10 +158,10 @@ def verificar_conexion_gemini(api_key: str, model_name: str = "gemini-3.5-flash"
         }
 
     key = api_key.strip()
-    target_model = model_name if model_name in GEMINI_MODELS else "gemini-3.5-flash"
+    target_model = model_name if model_name in GEMINI_MODELS else "gemini-2.0-flash"
 
-    # Candidates to test in priority order
-    models_to_try = [target_model, "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash"]
+    # Candidates to test in priority order (starting with official free-tier models with 1,500 req/day)
+    models_to_try = [target_model, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash", "gemini-1.5-pro"]
     tried = set()
     last_error = ""
 
@@ -185,7 +185,7 @@ def verificar_conexion_gemini(api_key: str, model_name: str = "gemini-3.5-flash"
                 reply = (response.text or "").strip()
                 note = ""
                 if m_try != model_name:
-                    note = f" (Actualizado a {m_try} porque Google restringe modelos antiguos a cuentas nuevas)"
+                    note = f" (Actualizado a {m_try} para optimizar tu cuota gratuita diaria)"
                 return {
                     "success": True,
                     "model": m_try,
@@ -195,11 +195,11 @@ def verificar_conexion_gemini(api_key: str, model_name: str = "gemini-3.5-flash"
             except Exception as e:
                 last_error = str(e)
                 err_lower = last_error.lower()
-                # If model is deprecated or not available to new users, try the next candidate
-                if "404" in err_lower or "not found" in err_lower or "no longer available" in err_lower:
+                # If model is deprecated, not found, or quota exceeded (429/resource exhausted on preview models), try next candidate
+                if any(k in err_lower for k in ["404", "not found", "no longer available", "429", "resource_exhausted", "quota"]):
                     continue
                 else:
-                    # Other errors (e.g. invalid key, quota, blocked) should not retry models
+                    # Other errors (e.g. invalid key 400) should not retry models
                     break
 
     except Exception as outer_err:
@@ -231,7 +231,7 @@ def evaluar_contexto_partido(
     cuotas_actuales: Dict[str, Any],
     contexto_usuario: Optional[str] = "",
     api_key: Optional[str] = None,
-    model_name: str = "gemini-3.5-flash",
+    model_name: str = "gemini-2.0-flash",
     is_demo: bool = False,
 ) -> TacticalAdjustment:
     """Evaluates qualitative and tactical context using Google Gemini.
@@ -277,10 +277,10 @@ REGLAS DE EVALUACIÓN:
 
     try:
         client = genai.Client(api_key=key)
-        target_model = model_name if model_name in GEMINI_MODELS else "gemini-3.5-flash"
+        target_model = model_name if model_name in GEMINI_MODELS else "gemini-2.0-flash"
 
         # Try target model with fallback for new accounts
-        models_to_try = [target_model, "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"]
+        models_to_try = [target_model, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash", "gemini-1.5-pro"]
         tried = set()
         response = None
 
@@ -302,7 +302,7 @@ REGLAS DE EVALUACIÓN:
                     break
             except Exception as call_err:
                 err_low = str(call_err).lower()
-                if "404" in err_low or "not found" in err_low or "no longer available" in err_low:
+                if any(k in err_low for k in ["404", "not found", "no longer available", "429", "resource_exhausted", "quota"]):
                     continue
                 else:
                     raise call_err

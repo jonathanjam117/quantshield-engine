@@ -269,10 +269,27 @@ st.markdown(
     }
     .live-indicator { animation: pulse-green 2s infinite; }
 
-    /* === HIDE STREAMLIT BRANDING === */
+    /* === HIDE STREAMLIT BRANDING (PRESERVING SIDEBAR TOGGLE ON MOBILE) === */
     #MainMenu  { visibility: hidden; }
     footer     { visibility: hidden; }
-    header     { visibility: hidden; }
+    div[data-testid="stDecoration"] { display: none; }
+    div[data-testid="stToolbar"] { display: none; }
+
+    /* Make the mobile sidebar toggle button prominent and easily tappable */
+    div[data-testid="stSidebarCollapsedControl"] {
+        visibility: visible !important;
+        display: flex !important;
+        background-color: #1e293b !important;
+        border-radius: 8px !important;
+        border: 1.5px solid #3b82f6 !important;
+        z-index: 1000000 !important;
+        margin-left: 6px !important;
+        margin-top: 4px !important;
+        box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4) !important;
+    }
+    div[data-testid="stSidebarCollapsedControl"] button {
+        color: #60a5fa !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -366,7 +383,7 @@ selected_gemini_model = st.sidebar.selectbox(
     "Modelo Gemini",
     options=GEMINI_MODELS,
     index=0,
-    help="gemini-3.5-flash: Recomendado actual (ultra rápido) | gemini-3.1-pro-preview: Máxima capacidad analítica | gemini-3.1-flash-lite: Baja latencia.",
+    help="gemini-2.0-flash: Modelo recomendado oficial (1,500 consultas gratis/día) | gemini-1.5-flash: Máxima estabilidad | gemini-2.0-flash-lite: Ultra rápido.",
 )
 
 col_ai_btn1, col_ai_btn2 = st.sidebar.columns([1.1, 0.9])
