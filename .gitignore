@@ -1,0 +1,70 @@
+# ============================================================
+#  QuantShield Engine — .gitignore
+#  NUNCA subir secretos, claves, ni datos personales a GitHub
+# ============================================================
+
+# Secretos y claves de API (CRÍTICO)
+.env
+*.env
+.env.local
+.env.production
+.streamlit/secrets.toml
+
+# Base de datos SQLite (contiene historial de apuestas personales)
+*.db
+*.sqlite
+*.sqlite3
+quantshield.db
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+# Distribución / build
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# Entornos virtuales (no subir al repo)
+.venv*/
+venv/
+env/
+ENV/
+.venv/
+
+# IDEs y editores
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Logs
+*.log
+logs/
+
+# Archivos temporales
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# Jupyter Notebooks (si se usan para análisis)
+.ipynb_checkpoints/
