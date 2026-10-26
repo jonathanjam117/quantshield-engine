@@ -318,6 +318,8 @@ def analyze_soccer_match(
     try:
         from models.parlay_engine import calculate_poisson_advanced_markets
         event["advanced_poisson_props"] = calculate_poisson_advanced_markets(lambda_h, lambda_a)
+        event["lambda_h"] = lambda_h
+        event["lambda_a"] = lambda_a
     except Exception:
         pass
 

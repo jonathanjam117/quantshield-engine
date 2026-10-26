@@ -117,6 +117,10 @@ from etl.odds_api_client import fetch_odds, get_available_sports
 from models.soccer_engine import analyze_soccer_match
 from models.tennis_engine import analyze_tennis_match
 from models.nba_engine import analyze_nba_match
+from models.betplay_markets import (
+    calculate_betplay_security_catalog,
+    generate_betplay_same_game_parlays,
+)
 from models.parlay_engine import (
     calculate_parlay,
     find_best_auto_parlay,
@@ -494,213 +498,571 @@ st.sidebar.info(
     f"🔒 **Regla de Oro**: Tope máximo por operación fijado en **3.5% del Bankroll** ({format_money(round(bankroll_val * 0.035, 2), selected_curr_code)})."
 )
 
+
+# ==============================================================================
+# GLOBAL DATA & TOURNAMENT LOADING
+# ==============================================================================
+sports_catalog = get_available_sports()
+col_cat, col_tourn, col_btn = st.columns([1.2, 1.8, 1])
+
+with col_cat:
+    category_selected = st.selectbox("Categoría Deportiva", list(sports_catalog.keys()))
+
+tournament_dict = sports_catalog[category_selected]
+with col_tourn:
+    tournament_key = st.selectbox(
+        "Competición Objetivo",
+        options=list(tournament_dict.keys()),
+        format_func=lambda k: tournament_dict[k]["name"],
+    )
+
+with col_btn:
+    st.write("")
+    st.write("")
+    force_refresh = st.button("🔄 Refrescar Escáner", use_container_width=True)
+
+# Cache Nonce management
+if "cache_nonce" not in st.session_state:
+    st.session_state.cache_nonce = 0
+if force_refresh:
+    st.session_state.cache_nonce += 1
+    st.cache_data.clear()
+
+# Fetch data
+selected_meta = tournament_dict[tournament_key]
+selected_meta["sport_key"] = tournament_key
+
+with st.spinner("Consultando cuotas y ejecutando modelos matemáticos..."):
+    events, meta, error_msg = get_cached_odds(
+        sport_key=tournament_key,
+        api_key=active_api_key,
+        is_demo=demo_mode_toggle,
+        force_nonce=st.session_state.cache_nonce,
+    )
+
+# Display Quota information in sidebar
+st.sidebar.markdown("### 📊 Cuota de The Odds API")
+st.sidebar.metric(
+    "Peticiones Restantes (Mes)",
+    str(meta.get("requests_remaining", "N/A")),
+    help="The Odds API ofrece 500 peticiones mensuales en el plan gratuito.",
+)
+
+if not demo_mode_toggle and not active_api_key:
+    st.warning(
+        "🔑 **Estás en Modo Real pero la casilla 'The Odds API Key' está vacía:**\n\n"
+        "Para conectarte a internet y descargar las cuotas reales de BetPlay y del mundo, necesitas tu clave gratuita de acceso:\n\n"
+        "1. Obtén tu clave gratis en 1 minuto en [the-odds-api.com](https://the-odds-api.com) (500 consultas gratis al mes, sin tarjetas ni pagos).\n"
+        "2. Pégala en la casilla **'The Odds API Key'** en la barra lateral izquierda.\n"
+        "3. Pulsa el botón **🔄 Refrescar Escáner**.\n\n"
+        "*(Si deseas seguir explorando sin clave, simplemente vuelve a encender el interruptor **🧪 Modo Simulación** en la barra lateral).*",
+        icon="ℹ️"
+    )
+elif error_msg:
+    st.warning(f"⚠️ {error_msg}")
+
+# Process events with mathematical models and Gemini AI context
+detected_opportunities: List[Dict[str, Any]] = []
+all_fixture_rows: List[Dict[str, Any]] = []
+
+# Initialize session state for AI adjustments and breaking news
+if "match_ai_adjustments" not in st.session_state:
+    st.session_state.match_ai_adjustments = {}
+if "match_user_notes" not in st.session_state:
+    st.session_state.match_user_notes = {}
+
+sport_type = selected_meta.get("type", "soccer")
+for event in events:
+    home_team = event.get("home_team", "")
+    away_team = event.get("away_team", "")
+    match_key = f"{home_team} vs {away_team}"
+
+    # Extract 1X2 odds for fixture overview prioritizing Colombian bookmakers
+    h_price, x_price, a_price, ref_bm = "-", "-", "-", "BetPlay"
+    bms = event.get("bookmakers", [])
+    # Prefer Colombian recreational house over Pinnacle for the fixture table
+    rec_bms = [b for b in bms if b.get("key", "").lower() != "pinnacle"]
+    target_bm = rec_bms[0] if rec_bms else (bms[0] if bms else None)
+
+    if target_bm:
+        for m in target_bm.get("markets", []):
+            if m.get("key") == "h2h":
+                for o in m.get("outcomes", []):
+                    if o.get("name") == home_team:
+                        h_price = f"{o.get('price', 0):.2f}"
+                    elif o.get("name") in ("Draw", "Empate", "X"):
+                        x_price = f"{o.get('price', 0):.2f}"
+                    elif o.get("name") == away_team:
+                        a_price = f"{o.get('price', 0):.2f}"
+                bm_t = target_bm.get("title", target_bm.get("key", "Ref"))
+                ref_bm = bm_t if target_bm.get("key", "").lower() != "pinnacle" else f"{bm_t} (Ref)"
+                break
+
+    # Evaluate Gemini AI tactical context if enabled
+    ai_adj = None
+    if ai_tactical_enabled:
+        if match_key in st.session_state.match_ai_adjustments:
+            ai_adj = st.session_state.match_ai_adjustments[match_key]
+        else:
+            odds_snapshot = {}
+            bms = event.get("bookmakers", [])
+            if bms:
+                for m in bms[0].get("markets", []):
+                    if m.get("key") == "h2h":
+                        for o in m.get("outcomes", []):
+                            odds_snapshot[o.get("name", "")] = o.get("price", 0.0)
+
+            user_notes = st.session_state.match_user_notes.get(match_key, "")
+            ai_adj = evaluar_contexto_partido(
+                deporte=category_selected,
+                torneo=selected_meta.get("name", ""),
+                local=home_team,
+                visita=away_team,
+                cuotas_actuales=odds_snapshot,
+                contexto_usuario=user_notes,
+                api_key=gemini_api_key_input.strip() if gemini_api_key_input else None,
+                model_name=selected_gemini_model,
+                is_demo=False,
+            )
+            st.session_state.match_ai_adjustments[match_key] = ai_adj
+
+    event_opps: List[Dict[str, Any]] = []
+    if sport_type in ("goals", "dnb", "intl"):
+        event_opps = analyze_soccer_match(
+            event=event,
+            sport_meta=selected_meta,
+            bankroll=bankroll_val,
+            kelly_k=kelly_multiplier,
+            min_ev=min_ev_filter,
+            min_odds=odds_range[0],
+            max_odds=odds_range[1],
+            ai_adjustment=ai_adj,
+        )
+        detected_opportunities.extend(event_opps)
+
+    elif sport_type == "tennis":
+        event_opps = analyze_tennis_match(
+            event=event,
+            sport_meta=selected_meta,
+            bankroll=bankroll_val,
+            kelly_k=kelly_multiplier,
+            min_ev=min_ev_filter,
+            min_odds=odds_range[0],
+            max_odds=odds_range[1],
+            ai_adjustment=ai_adj,
+        )
+        detected_opportunities.extend(event_opps)
+
+    elif sport_type == "nba":
+        event_opps = analyze_nba_match(
+            event=event,
+            sport_meta=selected_meta,
+            bankroll=bankroll_val,
+            kelly_k=kelly_multiplier,
+            min_ev=min_ev_filter,
+            min_odds=odds_range[0],
+            max_odds=odds_range[1],
+            ai_adjustment=ai_adj,
+        )
+        detected_opportunities.extend(event_opps)
+
+    if event_opps:
+        best_ev = max(event_opps, key=lambda x: x["ev_percent"])
+        verdict = f"🟢 +EV: {best_ev['market']} (+{best_ev['ev_percent']:.1f}%)"
+        has_val = True
+    else:
+        verdict = "⚪ Sin Ventaja (Margen Casa)"
+        has_val = False
+
+    all_fixture_rows.append({
+        "Fecha/Hora (Local)": format_short_local_time(event.get("commence_time", "")),
+        "Partido": match_key,
+        "1 (Local)": h_price,
+        "X (Empate)": x_price,
+        "2 (Visita)": a_price,
+        "Casa Ref": ref_bm,
+        "Diagnóstico QuantShield": verdict,
+        "_has_value": has_val,
+    })
+
+# Sort by EV (%) descending
+detected_opportunities.sort(key=lambda x: x["ev_percent"], reverse=True)
+
+
+st.session_state.current_opportunities = detected_opportunities
+st.session_state.current_events = events
+st.session_state.current_fixtures = all_fixture_rows
+
+
 # ==============================================================================
 # MAIN TABS INTERFACE
 # ==============================================================================
-tab_scanner, tab_parlays, tab_props, tab_audit, tab_telegram, tab_simulator = st.tabs([
-    "🎯 Escáner en Vivo (+EV Finder)",
-    "🚀 Creador de Combinadas (+EV Parlays)",
-    "⚽ Mercados de Goles & Córners (Bet Builder)",
+tab_betplay, tab_scanner, tab_audit, tab_telegram, tab_simulator = st.tabs([
+    "📱 Centro de Partido & Combinadas BetPlay",
+    "🎯 Cartelera General (+EV Finder)",
     "📈 Contabilidad & Auditoría (SQLite)",
     "📲 Alertas Móviles (Telegram)",
     "🧪 Simulador Histórico (Backtesting)",
 ])
 
 # ------------------------------------------------------------------------------
-# TAB 1: ESCÁNER EN VIVO (+EV FINDER)
+# TAB 1: CENTRO DE PARTIDO & COMBINADAS BETPLAY (ESTILO UNIFICADO APP MÓVIL)
+# ------------------------------------------------------------------------------
+with tab_betplay:
+    st.subheader("📱 Centro de Partido & Combinadas BetPlay")
+    st.caption(
+        "Experiencia unificada estilo app móvil BetPlay: Tarjetas de 'Combinadas para ti' (Same-Game Parlay de baja varianza) "
+        "y sábana integral de mercados de seguridad calculados a partir de la matriz Poisson 9x9."
+    )
+
+    if not events:
+        st.info("ℹ️ No hay partidos cargados para esta competición. Selecciona un torneo arriba o activa el Modo Simulación en la barra lateral.")
+    else:
+        # Match selector
+        match_labels = []
+        for ev in events:
+            ht = ev.get("home_team", "Local")
+            at = ev.get("away_team", "Visita")
+            t_str = format_short_local_time(ev.get("commence_time", ""))
+            match_labels.append(f"{ht} vs {at} ({t_str})")
+
+        c_msel1, c_msel2 = st.columns([2.5, 1])
+        with c_msel1:
+            selected_match_label = st.selectbox(
+                "⚽ Seleccionar Partido a Analizar:",
+                options=match_labels,
+                index=0,
+                key="betplay_match_select",
+            )
+        selected_match_idx = match_labels.index(selected_match_label)
+        curr_event = events[selected_match_idx]
+        cur_home = curr_event.get("home_team", "Local")
+        cur_away = curr_event.get("away_team", "Visita")
+        cur_match_name = f"{cur_home} vs {cur_away}"
+        cur_match_time = format_to_local_time(curr_event.get("commence_time", ""))
+
+        with c_msel2:
+            st.markdown(
+                "<div style='margin-top: 28px; text-align: right;'>"
+                "<span style='background-color: #1e3a5f; color: #38bdf8; padding: 6px 12px; border-radius: 8px; font-weight: 700; font-size: 0.88em;'>"
+                "⚡ BetPlay Verified</span></div>",
+                unsafe_allow_html=True,
+            )
+
+        # Expected Goals & Poisson resolution
+        adv_props = curr_event.get("advanced_poisson_props", {})
+        lam_h = float(curr_event.get("lambda_h", adv_props.get("lambda_h", 1.35)))
+        lam_a = float(curr_event.get("lambda_a", adv_props.get("lambda_a", 1.05)))
+        ai_adj = st.session_state.match_ai_adjustments.get(cur_match_name)
+
+        # Extract Colombian retail odds from event bookmakers
+        retail_odds_map = {}
+        for bm in curr_event.get("bookmakers", []):
+            if bm.get("key", "").lower() != "pinnacle":
+                for m in bm.get("markets", []):
+                    if m.get("key") == "h2h":
+                        for o in m.get("outcomes", []):
+                            if o.get("name") == cur_home:
+                                retail_odds_map["1"] = o.get("price", 0.0)
+                            elif o.get("name") in ("Draw", "Empate", "X"):
+                                retail_odds_map["X"] = o.get("price", 0.0)
+                            elif o.get("name") == cur_away:
+                                retail_odds_map["2"] = o.get("price", 0.0)
+
+        betplay_cat = calculate_betplay_security_catalog(
+            home_team=cur_home,
+            away_team=cur_away,
+            lambda_h=lam_h,
+            lambda_a=lam_a,
+            bankroll=bankroll_val,
+            kelly_multiplier=kelly_multiplier,
+            retail_odds=retail_odds_map,
+        )
+
+        sgp_cards = generate_betplay_same_game_parlays(
+            catalog=betplay_cat,
+            bankroll=bankroll_val,
+            kelly_multiplier=kelly_multiplier,
+            ai_adjustment=ai_adj,
+        )
+
+        # Top Banner: Match Context & Expected Goals
+        st.markdown(
+            f"""
+            <div style="background: linear-gradient(135deg, #0f192d 0%, #172554 100%); border: 1.5px solid #1e3a5f; border-radius: 12px; padding: 14px 18px; margin: 10px 0 16px 0;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div>
+                        <div style="font-size: 1.25rem; font-weight: 800; color: #ffffff; letter-spacing: 0.3px;">
+                            🏟️ {cur_home} vs {cur_away}
+                        </div>
+                        <div style="font-size: 0.85rem; color: #94a3b8; margin-top: 3px;">
+                            📅 <b>Programación Oficial:</b> {cur_match_time}
+                        </div>
+                    </div>
+                    <div>
+                        <span style="background: #0b1f3a; border: 1px solid #38bdf8; color: #38bdf8; padding: 5px 12px; border-radius: 8px; font-size: 0.88rem; font-weight: 700;">
+                            ⚽ Goles Esperados (xG): {cur_home} {lam_h:.2f} | {cur_away} {lam_a:.2f} | Total: {lam_h+lam_a:.2f}
+                        </span>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # AI Context Box if available
+        if ai_adj:
+            risk_color = "#10b981" if ai_adj["riesgo"] == "Bajo" else ("#f59e0b" if ai_adj["riesgo"] == "Medio" else "#ef4444")
+            st.markdown(
+                f"""
+                <div style="background-color: #0f192d; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; border-left: 4px solid #8b5cf6;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <span style="font-weight: 700; color: #c084fc; font-size: 0.9em;">🧠 Contexto Táctico Gemini ({selected_gemini_model})</span>
+                        <span style="background-color: {risk_color}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.78em; font-weight: 700;">
+                            Riesgo {ai_adj['riesgo']}
+                        </span>
+                    </div>
+                    <div style="color: #cbd5e1; font-size: 0.85em; font-style: italic;">
+                        "{ai_adj['justificacion']}"
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # ----------------------------------------------------------------------
+        # SECCIÓN 1: CARDS "COMBINADAS PARA TI" (BETPLAY STYLE CONNECTED DOTS)
+        # ----------------------------------------------------------------------
+        st.markdown("### ⚡ Combinadas para ti (Mismo Partido - Baja Varianza)")
+        st.caption(
+            "Combinaciones inteligentes de 2 a 3 selecciones del mismo partido con correlación positiva y alta probabilidad individual. "
+            "Para apostarlas, ingresa a BetPlay en tu celular ➔ abre el partido ➔ pestaña **'Crea tu Apuesta'**."
+        )
+
+        col_c1, col_c2, col_c3 = st.columns(3)
+        cols_for_cards = [col_c1, col_c2, col_c3]
+
+        for idx_card, (col_tgt, card) in enumerate(zip(cols_for_cards, sgp_cards)):
+            with col_tgt:
+                badge_bg = "#065f46" if "BLINDADA" in card["badge"] else ("#92400e" if "RITMO" in card["badge"] else "#5b21b6")
+                badge_fg = "#a7f3d0" if "BLINDADA" in card["badge"] else ("#fde68a" if "RITMO" in card["badge"] else "#ddd6fe")
+                border_color = "#10b981" if "BLINDADA" in card["badge"] else ("#f59e0b" if "RITMO" in card["badge"] else "#8b5cf6")
+                card_ev_str = f"+{card['ev_pct']}%" if card["ev_pct"] >= 0 else f"{card['ev_pct']}%"
+                card_ev_color = "#10b981" if card["ev_pct"] >= 0 else "#94a3b8"
+
+                # Build connected timeline HTML
+                legs_html = ""
+                for leg_idx, leg in enumerate(card["legs"]):
+                    is_last = (leg_idx == len(card["legs"]) - 1)
+                    margin_b = "0px" if is_last else "14px"
+                    legs_html += f"""
+                    <div style="position: relative; margin-bottom: {margin_b};">
+                        <div style="position: absolute; left: -21px; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.9);"></div>
+                        <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; letter-spacing: 0.4px;">
+                            {leg['market']}
+                        </div>
+                        <div style="font-size: 0.88rem; color: #ffffff; font-weight: 700; line-height: 1.3;">
+                            {leg['selection']} <span style="color: #fbbf24; font-size: 0.82rem; font-weight: 800;">@{leg['odds']:.2f}</span>
+                        </div>
+                    </div>
+                    """
+
+                st.markdown(
+                    f"""
+                    <div style="background: #0f192d; border: 1.5px solid {border_color}; border-radius: 14px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.45);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <span style="background: {badge_bg}; color: {badge_fg}; font-size: 0.76rem; font-weight: 800; padding: 3px 8px; border-radius: 6px; letter-spacing: 0.5px;">
+                                {card['badge']}
+                            </span>
+                            <span style="font-size: 0.73rem; color: #94a3b8; font-weight: 600;">{card['risk_label']}</span>
+                        </div>
+
+                        <!-- Connected dots timeline (BetPlay mobile) -->
+                        <div style="position: relative; padding-left: 22px; margin: 14px 0 14px 4px;">
+                            <div style="position: absolute; left: 4px; top: 6px; bottom: 8px; width: 2px; background: linear-gradient(180deg, #f59e0b, #fbbf24);"></div>
+                            {legs_html}
+                        </div>
+
+                        <!-- Metrics Summary Box -->
+                        <div style="background: #16243f; border-radius: 10px; padding: 10px 12px; margin: 12px 0;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <span style="color: #94a3b8; font-size: 0.82rem;">Cuota Combinada:</span>
+                                <span style="color: #fbbf24; font-weight: 800; font-size: 1.08rem;">@{card['odds']:.2f}</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <span style="color: #94a3b8; font-size: 0.80rem;">Probabilidad Real:</span>
+                                <span style="color: #38bdf8; font-weight: 700; font-size: 0.88rem;">{card['prob_pct']}%</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <span style="color: #94a3b8; font-size: 0.80rem;">Ventaja (+EV):</span>
+                                <span style="color: {card_ev_color}; font-weight: 700; font-size: 0.88rem;">{card_ev_str}</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #1e3a5f; padding-top: 6px; margin-top: 6px;">
+                                <span style="color: #f1f5f9; font-weight: 700; font-size: 0.84rem;">Stake Seguro:</span>
+                                <span style="color: #34d399; font-weight: 800; font-size: 0.96rem;">{format_money(card['recommended_stake'], selected_curr_code)}</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 2px;">
+                                <span style="color: #94a3b8; font-size: 0.78rem;">Ganancia Neta:</span>
+                                <span style="color: #a7f3d0; font-size: 0.82rem; font-weight: 600;">+{format_money(card['potential_profit'], selected_curr_code)}</span>
+                            </div>
+                        </div>
+
+                        <!-- BetPlay mobile instruction -->
+                        <div style="background: #091120; border-left: 3px solid #f59e0b; padding: 7px 10px; border-radius: 4px; font-size: 0.76rem; color: #cbd5e1; line-height: 1.35; margin-bottom: 10px;">
+                            📲 <b>En BetPlay:</b> Abre {cur_home} vs {cur_away} ➔ Pestaña <b>'Crea tu Apuesta'</b> ➔ Activa estas selecciones.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                if st.button(f"💾 Guardar {card['badge']} en SQLite", key=f"save_sgp_card_{selected_match_idx}_{idx_card}", use_container_width=True):
+                    legs_summary = " + ".join([f"{l['selection']} (@{l['odds']:.2f})" for l in card['legs']])
+                    new_id = add_bet(
+                        sport="Combinada / BetPlay SGP",
+                        tournament=curr_event.get("sport_title", selected_meta.get("name", "Fútbol")),
+                        match=cur_match_name,
+                        market=card["badge"],
+                        selection=" & ".join([l["selection"] for l in card["legs"]]),
+                        bookmaker="BetPlay",
+                        odds=card["odds"],
+                        fair_odds=card["fair_odds"],
+                        ev_percent=card["ev_pct"],
+                        stake=card["recommended_stake"],
+                        status="Pendiente",
+                        notes=f"BetPlay Same-Game Parlay. Legs: {legs_summary}",
+                        ai_analysis=card.get("instructions", ""),
+                    )
+                    st.toast(f"✅ ¡{card['badge']} guardada en SQLite (ID #{new_id})!", icon="💾")
+                    st.success(f"¡Combinada guardada con éxito en la base de datos (ID #{new_id})!")
+
+        # ----------------------------------------------------------------------
+        # SECCIÓN 2: SÁBANA UNIFICADA DE MERCADOS DE SEGURIDAD BETPLAY
+        # ----------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("### 📋 Sábana Unificada de Mercados de Seguridad BetPlay")
+        st.caption(
+            "Todos los mercados secundarios calculados con la matriz bivariada de Poisson (9x9). "
+            "Las opciones marcadas con 🟢 ENTRAR tienen Esperanza Matemática Positiva (+EV)."
+        )
+
+        def _render_sec_item(item_data, key_suffix):
+            with st.container(border=True):
+                col_i1, col_i2, col_i3, col_i4 = st.columns([2.3, 1.1, 1.1, 1.5])
+                with col_i1:
+                    st.markdown(f"**{item_data['name']}**")
+                    st.progress(float(min(1.0, max(0.0, item_data['prob_pct'] / 100.0))))
+                    st.caption(f"Prob. Poisson: **{item_data['prob_pct']}%** | Cuota Justa: **@{item_data['fair_odds']:.2f}**")
+                with col_i2:
+                    st.metric("Cuota BetPlay", f"@{item_data['retail_odds']:.2f}")
+                with col_i3:
+                    st.metric("Ventaja (+EV)", f"{item_data['ev_pct']:+.2f}%")
+                with col_i4:
+                    if item_data["has_value"]:
+                        st.markdown(
+                            f"<span style='background:#059669; color:white; padding:4px 8px; border-radius:6px; font-weight:700; font-size:0.82em;'>🟢 ENTRAR</span> "
+                            f"<span style='color:#34d399; font-weight:700; font-size:0.85em;'>Stake: {format_money(item_data['rec_stake'], selected_curr_code)}</span>",
+                            unsafe_allow_html=True,
+                        )
+                        if st.button("💾 Guardar", key=f"btn_sec_save_{key_suffix}", use_container_width=True):
+                            m_id = add_bet(
+                                sport="Fútbol",
+                                tournament=curr_event.get("sport_title", selected_meta.get("name", "Fútbol")),
+                                match=cur_match_name,
+                                market="Mercado de Seguridad BetPlay",
+                                selection=item_data["name"],
+                                bookmaker="BetPlay",
+                                odds=item_data["retail_odds"],
+                                fair_odds=item_data["fair_odds"],
+                                ev_percent=item_data["ev_pct"],
+                                stake=item_data["rec_stake"],
+                                status="Pendiente",
+                                notes=f"Poisson 9x9. Prob: {item_data['prob_pct']}%. Fair: @{item_data['fair_odds']}",
+                                ai_analysis="",
+                            )
+                            st.toast(f"✅ ¡Apuesta #{m_id} registrada!", icon="💾")
+                            st.success(f"¡Guardada en SQLite (ID #{m_id})!")
+                    else:
+                        st.markdown(
+                            "<span style='background:#475569; color:#cbd5e1; padding:4px 8px; border-radius:6px; font-weight:600; font-size:0.82em;'>⚪ PASAR</span> "
+                            "<span style='color:#94a3b8; font-size:0.80em;'>Margen Casa</span>",
+                            unsafe_allow_html=True,
+                        )
+
+        # BLOQUE 1: Resultado Final (1X2) y Doble Oportunidad
+        with st.expander("⚽ Bloque 1: Resultado Final (1X2) y Doble Oportunidad (1X, 12, X2)", expanded=True):
+            col_b1_left, col_b1_right = st.columns(2)
+            with col_b1_left:
+                st.markdown("##### 🏆 Resultado Final (1X2):")
+                _render_sec_item(betplay_cat["block_1x2"]["home"], f"{selected_match_idx}_1x2_h")
+                _render_sec_item(betplay_cat["block_1x2"]["draw"], f"{selected_match_idx}_1x2_x")
+                _render_sec_item(betplay_cat["block_1x2"]["away"], f"{selected_match_idx}_1x2_a")
+            with col_b1_right:
+                st.markdown("##### 🛡️ Doble Oportunidad (Protección):")
+                _render_sec_item(betplay_cat["block_double_chance"]["1X"], f"{selected_match_idx}_dc_1x")
+                _render_sec_item(betplay_cat["block_double_chance"]["12"], f"{selected_match_idx}_dc_12")
+                _render_sec_item(betplay_cat["block_double_chance"]["X2"], f"{selected_match_idx}_dc_x2")
+
+        # BLOQUE 2: Apuesta sin Empate (Draw No Bet)
+        with st.expander("🛡️ Bloque 2: Apuesta sin Empate (Draw No Bet / Reembolso si Empatan)", expanded=True):
+            st.caption("🟡 Si el partido termina en empate, la casa reembolsa el 100% de tu dinero apostado (Push).")
+            col_b2_left, col_b2_right = st.columns(2)
+            with col_b2_left:
+                _render_sec_item(betplay_cat["block_dnb"]["dnb_home"], f"{selected_match_idx}_dnb_h")
+            with col_b2_right:
+                _render_sec_item(betplay_cat["block_dnb"]["dnb_away"], f"{selected_match_idx}_dnb_a")
+
+        # BLOQUE 3: Total de Goles por Equipo (Local y Visita)
+        with st.expander("🥅 Bloque 3: Total de Goles por Equipo (Individual Local / Visita)", expanded=False):
+            col_b3_left, col_b3_right = st.columns(2)
+            with col_b3_left:
+                st.markdown(f"##### 🏠 Goles de {cur_home} (Local):")
+                _render_sec_item(betplay_cat["block_team_goals_home"]["over_05"], f"{selected_match_idx}_h_o05")
+                _render_sec_item(betplay_cat["block_team_goals_home"]["over_15"], f"{selected_match_idx}_h_o15")
+                _render_sec_item(betplay_cat["block_team_goals_home"]["over_25"], f"{selected_match_idx}_h_o25")
+            with col_b3_right:
+                st.markdown(f"##### ✈️ Goles de {cur_away} (Visita):")
+                _render_sec_item(betplay_cat["block_team_goals_away"]["over_05"], f"{selected_match_idx}_a_o05")
+                _render_sec_item(betplay_cat["block_team_goals_away"]["over_15"], f"{selected_match_idx}_a_o15")
+                _render_sec_item(betplay_cat["block_team_goals_away"]["over_25"], f"{selected_match_idx}_a_o25")
+
+        # BLOQUE 4: Ambos Equipos Marcarán (BTTS) y Gol en Ambas Mitades
+        with st.expander("⚽ Bloque 4: Ambos Equipos Marcarán & Gol en Ambas Mitades", expanded=False):
+            col_b4_left, col_b4_right = st.columns(2)
+            with col_b4_left:
+                st.markdown("##### 🤝 Ambos Equipos Anotarán:")
+                _render_sec_item(betplay_cat["block_btts"]["btts_yes"], f"{selected_match_idx}_btts_y")
+                _render_sec_item(betplay_cat["block_btts"]["btts_no"], f"{selected_match_idx}_btts_n")
+            with col_b4_right:
+                st.markdown("##### ⏱️ Distribución Temporal de Goles:")
+                _render_sec_item(betplay_cat["block_both_halves"]["halves_yes"], f"{selected_match_idx}_half_y")
+                _render_sec_item(betplay_cat["block_both_halves"]["halves_no"], f"{selected_match_idx}_half_n")
+                _render_sec_item(betplay_cat["block_both_halves"]["first_half_over05"], f"{selected_match_idx}_1h_o05")
+
+        # BLOQUE 5: Bandas de Goles y Combos Pre-armados
+        with st.expander("🧩 Bloque 5: Número de Bandas de Goles & Combos Bet Builder", expanded=False):
+            col_b5_left, col_b5_right = st.columns(2)
+            with col_b5_left:
+                st.markdown("##### 🎯 Bandas de Goles Totales:")
+                _render_sec_item(betplay_cat["block_goal_bands"]["band_0_2"], f"{selected_match_idx}_band_02")
+                _render_sec_item(betplay_cat["block_goal_bands"]["band_3_4"], f"{selected_match_idx}_band_34")
+                _render_sec_item(betplay_cat["block_goal_bands"]["band_5_plus"], f"{selected_match_idx}_band_5p")
+                _render_sec_item(betplay_cat["block_goal_bands"]["over_15_total"], f"{selected_match_idx}_tot_o15")
+            with col_b5_right:
+                st.markdown("##### 🧩 Combos Pre-armados del Mismo Partido:")
+                _render_sec_item(betplay_cat["block_combos"]["h_and_btts"], f"{selected_match_idx}_h_btts")
+                _render_sec_item(betplay_cat["block_combos"]["a_and_btts"], f"{selected_match_idx}_a_btts")
+                _render_sec_item(betplay_cat["block_combos"]["draw_under25"], f"{selected_match_idx}_draw_u25")
+
+# ------------------------------------------------------------------------------
+# TAB 2: CARTELERA GENERAL (+EV FINDER)
 # ------------------------------------------------------------------------------
 with tab_scanner:
-    st.subheader("🎯 Escáner Cuantitativo de Oportunidades (+EV)")
+    st.subheader("🎯 Cartelera General (+EV Finder)")
     st.markdown(
         "Detecta apuestas de **Esperanza Matemática Positiva** comparando las probabilidades limpias "
         "del oráculo de mercado (**Pinnacle Vig-Free**) con modelos probabilísticos bivariados de Poisson y distribución Gaussiana."
     )
-
-    sports_catalog = get_available_sports()
-    col_cat, col_tourn, col_btn = st.columns([1.2, 1.8, 1])
-
-    with col_cat:
-        category_selected = st.selectbox("Categoría Deportiva", list(sports_catalog.keys()))
-
-    tournament_dict = sports_catalog[category_selected]
-    with col_tourn:
-        tournament_key = st.selectbox(
-            "Competición Objetivo",
-            options=list(tournament_dict.keys()),
-            format_func=lambda k: tournament_dict[k]["name"],
-        )
-
-    with col_btn:
-        st.write("")
-        st.write("")
-        force_refresh = st.button("🔄 Refrescar Escáner", use_container_width=True)
-
-    # Cache Nonce management
-    if "cache_nonce" not in st.session_state:
-        st.session_state.cache_nonce = 0
-    if force_refresh:
-        st.session_state.cache_nonce += 1
-        st.cache_data.clear()
-
-    # Fetch data
-    selected_meta = tournament_dict[tournament_key]
-    selected_meta["sport_key"] = tournament_key
-
-    with st.spinner("Consultando cuotas y ejecutando modelos matemáticos..."):
-        events, meta, error_msg = get_cached_odds(
-            sport_key=tournament_key,
-            api_key=active_api_key,
-            is_demo=demo_mode_toggle,
-            force_nonce=st.session_state.cache_nonce,
-        )
-
-    # Display Quota information in sidebar
-    st.sidebar.markdown("### 📊 Cuota de The Odds API")
-    st.sidebar.metric(
-        "Peticiones Restantes (Mes)",
-        str(meta.get("requests_remaining", "N/A")),
-        help="The Odds API ofrece 500 peticiones mensuales en el plan gratuito.",
-    )
-
-    if not demo_mode_toggle and not active_api_key:
-        st.warning(
-            "🔑 **Estás en Modo Real pero la casilla 'The Odds API Key' está vacía:**\n\n"
-            "Para conectarte a internet y descargar las cuotas reales de BetPlay y del mundo, necesitas tu clave gratuita de acceso:\n\n"
-            "1. Obtén tu clave gratis en 1 minuto en [the-odds-api.com](https://the-odds-api.com) (500 consultas gratis al mes, sin tarjetas ni pagos).\n"
-            "2. Pégala en la casilla **'The Odds API Key'** en la barra lateral izquierda.\n"
-            "3. Pulsa el botón **🔄 Refrescar Escáner**.\n\n"
-            "*(Si deseas seguir explorando sin clave, simplemente vuelve a encender el interruptor **🧪 Modo Simulación** en la barra lateral).*",
-            icon="ℹ️"
-        )
-    elif error_msg:
-        st.warning(f"⚠️ {error_msg}")
-
-    # Process events with mathematical models and Gemini AI context
-    detected_opportunities: List[Dict[str, Any]] = []
-    all_fixture_rows: List[Dict[str, Any]] = []
-
-    # Initialize session state for AI adjustments and breaking news
-    if "match_ai_adjustments" not in st.session_state:
-        st.session_state.match_ai_adjustments = {}
-    if "match_user_notes" not in st.session_state:
-        st.session_state.match_user_notes = {}
-
-    sport_type = selected_meta.get("type", "soccer")
-    for event in events:
-        home_team = event.get("home_team", "")
-        away_team = event.get("away_team", "")
-        match_key = f"{home_team} vs {away_team}"
-
-        # Extract 1X2 odds for fixture overview prioritizing Colombian bookmakers
-        h_price, x_price, a_price, ref_bm = "-", "-", "-", "BetPlay"
-        bms = event.get("bookmakers", [])
-        # Prefer Colombian recreational house over Pinnacle for the fixture table
-        rec_bms = [b for b in bms if b.get("key", "").lower() != "pinnacle"]
-        target_bm = rec_bms[0] if rec_bms else (bms[0] if bms else None)
-
-        if target_bm:
-            for m in target_bm.get("markets", []):
-                if m.get("key") == "h2h":
-                    for o in m.get("outcomes", []):
-                        if o.get("name") == home_team:
-                            h_price = f"{o.get('price', 0):.2f}"
-                        elif o.get("name") in ("Draw", "Empate", "X"):
-                            x_price = f"{o.get('price', 0):.2f}"
-                        elif o.get("name") == away_team:
-                            a_price = f"{o.get('price', 0):.2f}"
-                    bm_t = target_bm.get("title", target_bm.get("key", "Ref"))
-                    ref_bm = bm_t if target_bm.get("key", "").lower() != "pinnacle" else f"{bm_t} (Ref)"
-                    break
-
-        # Evaluate Gemini AI tactical context if enabled
-        ai_adj = None
-        if ai_tactical_enabled:
-            if match_key in st.session_state.match_ai_adjustments:
-                ai_adj = st.session_state.match_ai_adjustments[match_key]
-            else:
-                odds_snapshot = {}
-                bms = event.get("bookmakers", [])
-                if bms:
-                    for m in bms[0].get("markets", []):
-                        if m.get("key") == "h2h":
-                            for o in m.get("outcomes", []):
-                                odds_snapshot[o.get("name", "")] = o.get("price", 0.0)
-
-                user_notes = st.session_state.match_user_notes.get(match_key, "")
-                ai_adj = evaluar_contexto_partido(
-                    deporte=category_selected,
-                    torneo=selected_meta.get("name", ""),
-                    local=home_team,
-                    visita=away_team,
-                    cuotas_actuales=odds_snapshot,
-                    contexto_usuario=user_notes,
-                    api_key=gemini_api_key_input.strip() if gemini_api_key_input else None,
-                    model_name=selected_gemini_model,
-                    is_demo=False,
-                )
-                st.session_state.match_ai_adjustments[match_key] = ai_adj
-
-        event_opps: List[Dict[str, Any]] = []
-        if sport_type in ("goals", "dnb", "intl"):
-            event_opps = analyze_soccer_match(
-                event=event,
-                sport_meta=selected_meta,
-                bankroll=bankroll_val,
-                kelly_k=kelly_multiplier,
-                min_ev=min_ev_filter,
-                min_odds=odds_range[0],
-                max_odds=odds_range[1],
-                ai_adjustment=ai_adj,
-            )
-            detected_opportunities.extend(event_opps)
-
-        elif sport_type == "tennis":
-            event_opps = analyze_tennis_match(
-                event=event,
-                sport_meta=selected_meta,
-                bankroll=bankroll_val,
-                kelly_k=kelly_multiplier,
-                min_ev=min_ev_filter,
-                min_odds=odds_range[0],
-                max_odds=odds_range[1],
-                ai_adjustment=ai_adj,
-            )
-            detected_opportunities.extend(event_opps)
-
-        elif sport_type == "nba":
-            event_opps = analyze_nba_match(
-                event=event,
-                sport_meta=selected_meta,
-                bankroll=bankroll_val,
-                kelly_k=kelly_multiplier,
-                min_ev=min_ev_filter,
-                min_odds=odds_range[0],
-                max_odds=odds_range[1],
-                ai_adjustment=ai_adj,
-            )
-            detected_opportunities.extend(event_opps)
-
-        if event_opps:
-            best_ev = max(event_opps, key=lambda x: x["ev_percent"])
-            verdict = f"🟢 +EV: {best_ev['market']} (+{best_ev['ev_percent']:.1f}%)"
-            has_val = True
-        else:
-            verdict = "⚪ Sin Ventaja (Margen Casa)"
-            has_val = False
-
-        all_fixture_rows.append({
-            "Fecha/Hora (Local)": format_short_local_time(event.get("commence_time", "")),
-            "Partido": match_key,
-            "1 (Local)": h_price,
-            "X (Empate)": x_price,
-            "2 (Visita)": a_price,
-            "Casa Ref": ref_bm,
-            "Diagnóstico QuantShield": verdict,
-            "_has_value": has_val,
-        })
-
-    # Sort by EV (%) descending
-    detected_opportunities.sort(key=lambda x: x["ev_percent"], reverse=True)
 
     # View Mode Selector: Solo Oportunidades vs Cartelera Completa
     c_view1, c_view2 = st.columns([1.8, 1])
@@ -1014,308 +1376,14 @@ with tab_scanner:
                     st.toast(f"✅ ¡Apuesta #{new_id} ({col_bm_selected}) registrada en quantshield.db!", icon="💾")
                     st.success(f"Apuesta guardada con éxito en la base de datos (ID #{new_id} - {col_bm_selected}). Puedes auditarla en la pestaña de Contabilidad.")
 
-    # Persist session state for Parlay Builder & Prop Tools
-    st.session_state.current_opportunities = detected_opportunities
-    st.session_state.current_events = events
-    st.session_state.current_fixtures = all_fixture_rows
 
     if len(detected_opportunities) >= 2:
-        st.markdown("---")
+        st.markdown('---')
         st.info(
             f"💡 **Multiplicador de Retorno:** Se detectaron **{len(detected_opportunities)} apuestas con ventaja matemática**. "
-            "¡Pasa a la pestaña **'🚀 Creador de Combinadas (+EV Parlays)'** para ver la Super-Combinada recomendada o armar tu propio parlay!"
+            "¡Pasa a la pestaña **'📱 Centro de Partido & Combinadas BetPlay'** para ver las combinadas sugeridas (Same-Game Parlay)!"
         )
 
-# ------------------------------------------------------------------------------
-# TAB: CREADOR DE COMBINADAS (+EV PARLAYS)
-# ------------------------------------------------------------------------------
-with tab_parlays:
-    st.subheader("🚀 Creador Cuantitativo de Combinadas (+EV Parlay Builder)")
-    st.markdown(
-        "Arma apuestas combinadas (parlays / acumuladas) multiplicando únicamente selecciones que individualmente tienen ventaja matemática (+EV). "
-        "QuantShield calcula la **cuota multiplicada**, la **probabilidad real compuesta**, el **EV compuesto** y el **stake seguro con el criterio de Kelly ajustado a la varianza**."
-    )
-
-    opps_for_parlay = st.session_state.get("current_opportunities", detected_opportunities)
-
-    if not opps_for_parlay or len(opps_for_parlay) < 2:
-        st.info(
-            "ℹ️ Para armar una combinada con ventaja matemática se requieren al menos **2 apuestas con valor (+EV)** detectadas en el escáner. "
-            "Ejecuta el escáner en la pestaña anterior o prueba relajando los filtros (EV mínimo o rango de cuotas)."
-        )
-    else:
-        # A. SUPER-COMBINADA DEL DÍA
-        st.markdown("### ⭐ Super-Combinada Óptima del Día (+EV)")
-        st.caption("El algoritmo selecciona automáticamente las 2 mejores oportunidades de partidos diferentes con mayor valor matemático:")
-
-        auto_parlay = find_best_auto_parlay(opps_for_parlay, bankroll=bankroll_val, kelly_multiplier=kelly_multiplier, num_legs=2)
-        if auto_parlay:
-            with st.container(border=True):
-                c_sb1, c_sb2, c_sb3, c_sb4 = st.columns(4)
-                c_sb1.metric("Cuota Combinada", f"@{auto_parlay['combined_odds']:.2f}", help="Cuota total multiplicada")
-                c_sb2.metric("Probabilidad Real", f"{auto_parlay['combined_prob_pct']}%", help=f"Cuota Justa: @{auto_parlay['fair_odds']:.2f}")
-                c_sb3.metric("Ventaja Compuesta (+EV)", f"+{auto_parlay['compound_ev_pct']:.2f}%", help="Esperanza matemática multiplicada")
-                c_sb4.metric("Stake Seguro", format_money(auto_parlay['recommended_stake'], selected_curr_code), help=f"{auto_parlay['recommended_stake_pct']}% del bankroll (Kelly con tope por varianza)")
-
-                st.markdown("##### 📋 Selecciones que integran la Combinada:")
-                legs_df = []
-                for idx_leg, leg in enumerate(auto_parlay['legs']):
-                    legs_df.append({
-                        "Leg": f"#{idx_leg+1}",
-                        "Partido": leg["match"],
-                        "Mercado": leg["market"],
-                        "Selección": leg["selection"],
-                        "Casa Colombia": leg["bookmaker"],
-                        "Cuota": f"{leg['odds']:.2f}",
-                        "EV Individual": f"+{leg['ev_percent']:.2f}%",
-                    })
-                st.dataframe(pd.DataFrame(legs_df), use_container_width=True, hide_index=True)
-
-                c_prof1, c_prof2 = st.columns([2, 1])
-                with c_prof1:
-                    st.markdown(
-                        f"💰 **Retorno Potencial:** Ganancia neta de **{format_money(auto_parlay['potential_profit'], selected_curr_code)}** "
-                        f"(Cobro total: {format_money(auto_parlay['potential_total_payout'], selected_curr_code)}) invirtiendo {format_money(auto_parlay['recommended_stake'], selected_curr_code)}."
-                    )
-                with c_prof2:
-                    if st.button("💾 Guardar Super-Combinada en SQLite", key="save_auto_parlay_btn", use_container_width=True):
-                        legs_desc = " + ".join([f"{l['match']} ({l['selection']} @{l['odds']})" for l in auto_parlay['legs']])
-                        col_house = auto_parlay['legs'][0]['bookmaker']
-                        new_parlay_id = add_bet(
-                            sport="Combinada / Parlay",
-                            tournament="Multi-Torneo (+EV)",
-                            match=" // ".join([l['match'] for l in auto_parlay['legs']]),
-                            market="Combinada +EV",
-                            selection=f"Combo {len(auto_parlay['legs'])} legs: " + " & ".join([l['selection'] for l in auto_parlay['legs']]),
-                            bookmaker=col_house,
-                            odds=auto_parlay['combined_odds'],
-                            fair_odds=auto_parlay['fair_odds'],
-                            ev_percent=auto_parlay['compound_ev_pct'],
-                            stake=auto_parlay['recommended_stake'],
-                            status="Pendiente",
-                            notes=f"Super-Combinada de Valor del Día. Legs: {legs_desc}",
-                            ai_analysis=f"Combinada de {len(auto_parlay['legs'])} selecciones con ventaja matemática. Probabilidad real: {auto_parlay['combined_prob_pct']}%.",
-                        )
-                        st.toast(f"✅ ¡Super-Combinada #{new_parlay_id} guardada en SQLite!", icon="💾")
-                        st.success(f"¡Combinada #{new_parlay_id} registrada con éxito! Puedes auditarla en la pestaña de Contabilidad.")
-
-        st.markdown("---")
-        # B. CONSTRUCTOR MANUAL DE COMBINADAS
-        st.markdown("### 🛠️ Constructor Manual de Combinadas")
-        st.caption("Elige tú mismo qué selecciones de la cartelera deseas combinar en tu casa de apuestas favorita (BetPlay, Rushbet, Wplay, Bwin):")
-
-        opp_labels = [
-            f"#{i+1} | {o['match']} — {o['selection']} ({o['market']}) @{o['odds']} [{o['bookmaker']}] (+{o['ev_percent']}%)"
-            for i, o in enumerate(opps_for_parlay)
-        ]
-        chosen_labels = st.multiselect(
-            "Selecciona 2 o más apuestas para combinar:",
-            options=opp_labels,
-            default=opp_labels[:2] if len(opp_labels) >= 2 else [],
-        )
-
-        if len(chosen_labels) >= 2:
-            chosen_opps = [opps_for_parlay[opp_labels.index(lbl)] for lbl in chosen_labels]
-            custom_res = calculate_parlay(chosen_opps, bankroll=bankroll_val, kelly_multiplier=kelly_multiplier)
-
-            if custom_res:
-                if custom_res["has_duplicate_matches"]:
-                    st.warning(
-                        "⚠️ **Nota sobre Mismo Partido (Bet Builder):** Has seleccionado dos o más mercados del mismo partido. "
-                        "Para apostar esto en BetPlay o Rushbet, debes ingresar al partido y usar la función **'Crea tu Apuesta / Bet Builder'**, "
-                        "ya que las apuestas dentro del mismo juego tienen correlación.",
-                        icon="⚠️"
-                    )
-
-                with st.container(border=True):
-                    c_cr1, c_cr2, c_cr3, c_cr4 = st.columns(4)
-                    c_cr1.metric("Cuota Combinada", f"@{custom_res['combined_odds']:.2f}")
-                    c_cr2.metric("Probabilidad Compuesta", f"{custom_res['combined_prob_pct']}%", help=f"Cuota Justa: @{custom_res['fair_odds']:.2f}")
-                    c_cr3.metric("EV Compuesto", f"+{custom_res['compound_ev_pct']:.2f}%")
-                    c_cr4.metric("Stake Sugerido", format_money(custom_res['recommended_stake'], selected_curr_code), help=f"{custom_res['recommended_stake_pct']}% del bankroll")
-
-                    st.markdown(
-                        f"💵 **Ganancia Neta si aciertas:** **{format_money(custom_res['potential_profit'], selected_curr_code)}** "
-                        f"(Cobro total: {format_money(custom_res['potential_total_payout'], selected_curr_code)})."
-                    )
-
-                    c_bm_pick, c_btn_save = st.columns([1.5, 1])
-                    with c_bm_pick:
-                        parlay_bm_chosen = st.selectbox(
-                            "Casa de Apuestas para colocar la combinada:",
-                            options=["BetPlay", "Rushbet", "Wplay", "Bwin Colombia", "Codere", "Betsson"],
-                            key="parlay_manual_bm_select",
-                        )
-                    with c_btn_save:
-                        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                        if st.button("💾 Guardar Combinada en SQLite", key="save_custom_parlay_btn", use_container_width=True):
-                            legs_desc = " + ".join([f"{l['match']} ({l['selection']} @{l['odds']})" for l in custom_res['legs']])
-                            new_c_id = add_bet(
-                                sport="Combinada / Parlay",
-                                tournament="Personalizada (+EV)",
-                                match=" // ".join([l['match'] for l in custom_res['legs']]),
-                                market="Combinada +EV",
-                                selection=f"Combo {len(custom_res['legs'])} legs: " + " & ".join([l['selection'] for l in custom_res['legs']]),
-                                bookmaker=parlay_bm_chosen,
-                                odds=custom_res['combined_odds'],
-                                fair_odds=custom_res['fair_odds'],
-                                ev_percent=custom_res['compound_ev_pct'],
-                                stake=custom_res['recommended_stake'],
-                                status="Pendiente",
-                                notes=f"Combinada Personalizada. Legs: {legs_desc}",
-                                ai_analysis=f"Combinada personalizada de {len(custom_res['legs'])} selecciones. Probabilidad real: {custom_res['combined_prob_pct']}%.",
-                            )
-                            st.toast(f"✅ ¡Combinada #{new_c_id} guardada en SQLite!", icon="💾")
-                            st.success(f"¡Combinada #{new_c_id} registrada con éxito en tu base de datos!")
-        else:
-            st.info("👆 Selecciona al menos 2 apuestas arriba para calcular las métricas combinadas.")
-
-# ------------------------------------------------------------------------------
-# TAB: MERCADOS DE GOLES & CÓRNERS (BET BUILDER)
-# ------------------------------------------------------------------------------
-with tab_props:
-    st.subheader("⚽ Mercados de Goles & Córners (Bet Builder)")
-    st.markdown(
-        "Herramientas cuantitativas para mercados secundarios: tiros de esquina (córners), "
-        "ambos equipos marcan (BTTS) y combinaciones dentro de un mismo partido con modelos de Poisson bivariado."
-    )
-
-    tab_sub_corners, tab_sub_goals = st.tabs([
-        "🚩 Calculadora de Tiros de Esquina (Córners)",
-        "🎯 Guía de Goles & Bet Builder (Mismo Partido)",
-    ])
-
-    with tab_sub_corners:
-        st.markdown("#### 🚩 Calculadora Cuantitativa de Córners (Tiros de Esquina)")
-        st.caption(
-            "Compara las cuotas de córners que ves en tu app de BetPlay, Rushbet o Wplay contra la distribución Poisson de tiros de esquina "
-            "para saber si tienen valor matemático positivo (+EV) o si son una trampa de la casa."
-        )
-
-        c_c1, c_c2, c_c3 = st.columns(3)
-        with c_c1:
-            corner_league = st.selectbox(
-                "Competición:",
-                options=["Colombia - Liga BetPlay", "UEFA Champions League", "Premier League (Inglaterra)", "La Liga (España)", "Otra Liga"],
-            )
-        with c_c2:
-            default_lam = 9.4 if "Colombia" in corner_league else (10.2 if "Premier" in corner_league else 9.8)
-            exp_corners = st.number_input(
-                "Promedio Total de Córners Esperados:",
-                min_value=5.0,
-                max_value=16.0,
-                value=float(default_lam),
-                step=0.1,
-                help="Promedio histórico de córners en este torneo o entre ambos equipos.",
-            )
-        with c_c3:
-            corner_line = st.selectbox(
-                "Línea de Córners de la Casa:",
-                options=[7.5, 8.5, 9.5, 10.5, 11.5],
-                index=2,  # 9.5
-                help="Línea que te ofrece BetPlay o Rushbet (ej. Más de 9.5 / Menos de 9.5)",
-            )
-
-        c_c4, c_c5, c_c6 = st.columns(3)
-        with c_c4:
-            c_odds_over = st.number_input(
-                f"Cuota 'Más de {corner_line}' (Over):",
-                min_value=1.05,
-                max_value=10.0,
-                value=1.90,
-                step=0.01,
-            )
-        with c_c5:
-            c_odds_under = st.number_input(
-                f"Cuota 'Menos de {corner_line}' (Under):",
-                min_value=1.05,
-                max_value=10.0,
-                value=1.85,
-                step=0.01,
-            )
-        with c_c6:
-            c_house = st.selectbox(
-                "Casa de Apuestas:",
-                options=["BetPlay", "Rushbet", "Wplay", "Bwin Colombia"],
-                key="corner_house_sel",
-            )
-
-        corners_eval = evaluate_corners_poisson(
-            expected_total_corners=exp_corners,
-            line=corner_line,
-            odds_over=c_odds_over,
-            odds_under=c_odds_under,
-            bankroll=bankroll_val,
-        )
-
-        st.markdown("##### 📊 Diagnóstico del Modelo Poisson de Córners:")
-        c_res1, c_res2, c_res3, c_res4 = st.columns(4)
-        c_res1.metric(f"Prob. Más de {corner_line}", f"{corners_eval['p_over_pct']}%", help=f"Cuota Justa: @{corners_eval['fair_odds_over']}")
-        c_res2.metric(f"EV Más de {corner_line}", f"{corners_eval['ev_over_pct']:+.2f}%")
-        c_res3.metric(f"Prob. Menos de {corner_line}", f"{corners_eval['p_under_pct']}%", help=f"Cuota Justa: @{corners_eval['fair_odds_under']}")
-        c_res4.metric(f"EV Menos de {corner_line}", f"{corners_eval['ev_under_pct']:+.2f}%")
-
-        if corners_eval["has_value"]:
-            st.success(
-                f"🟢 **¡VENTAJA MATEMÁTICA DETECTADA!**\n\n"
-                f"• **Apuesta recomendada:** `{corners_eval['best_selection']}` a cuota **@{corners_eval['best_odds']}** en **{c_house}**.\n"
-                f"• **Cuota Justa:** @{corners_eval['best_fair']} (Probabilidad real de acierto: {corners_eval['best_prob']}%).\n"
-                f"• **Ventaja sobre la casa (+EV):** +{corners_eval['best_ev']}%."
-            )
-        else:
-            st.warning(
-                f"⚪ **Sin Ventaja Matemática (Margen Casa):**\n\n"
-                f"Tanto la cuota de 'Más de' ({c_odds_over}) como la de 'Menos de' ({c_odds_under}) están por debajo de sus cuotas justas (@{corners_eval['fair_odds_over']} y @{corners_eval['fair_odds_under']}). "
-                f"El margen de {c_house} en esta línea es alto. **No se recomienda apostar.**"
-            )
-
-    with tab_sub_goals:
-        st.markdown("#### 🎯 Guía Cuantitativa de Mercados de Goles & Bet Builder")
-        st.caption("Consulta las probabilidades reales y cuotas justas de todos los mercados de goles calculados por la matriz Poisson 9x9.")
-
-        events_for_props = st.session_state.get("current_events", events)
-        if not events_for_props:
-            st.info("ℹ️ No hay partidos cargados actualmente. Ejecuta el escáner para ver la cartelera.")
-        else:
-            event_match_options = [f"{e.get('home_team', '')} vs {e.get('away_team', '')}" for e in events_for_props]
-            sel_match_prop = st.selectbox("Seleccionar Partido para ver Mercados Derivados:", event_match_options)
-            chosen_event_prop = next((e for e in events_for_props if f"{e.get('home_team', '')} vs {e.get('away_team', '')}" == sel_match_prop), None)
-
-            if chosen_event_prop:
-                props_data = chosen_event_prop.get("advanced_poisson_props")
-                if not props_data:
-                    props_data = calculate_poisson_advanced_markets(lambda_h=1.35, lambda_a=1.05)
-
-                st.markdown(
-                    f"**Goles Esperados (xG):** Local: `{props_data.get('lambda_h', 1.35)}` | Visita: `{props_data.get('lambda_a', 1.05)}` | "
-                    f"Total Partido: `{props_data.get('expected_total_goals', 2.40)}` goles"
-                )
-
-                col_p1, col_p2 = st.columns(2)
-                with col_p1:
-                    st.markdown("##### ⚽ Mercados de Ambos Marcan & Totales:")
-                    goals_table = [
-                        {"Mercado": "Ambos Equipos Anotan: SÍ", "Probabilidad": f"{props_data['btts_yes_prob']}%", "Cuota Justa Mínima": f"@{props_data['btts_yes_fair_odds']}"},
-                        {"Mercado": "Ambos Equipos Anotan: NO", "Probabilidad": f"{props_data['btts_no_prob']}%", "Cuota Justa Mínima": f"@{props_data['btts_no_fair_odds']}"},
-                        {"Mercado": "Más de 1.5 Goles", "Probabilidad": f"{props_data['over_15_prob']}%", "Cuota Justa Mínima": f"@{props_data['over_15_fair_odds']}"},
-                        {"Mercado": "Menos de 1.5 Goles", "Probabilidad": f"{props_data['under_15_prob']}%", "Cuota Justa Mínima": f"@{props_data['under_15_fair_odds']}"},
-                        {"Mercado": "Más de 2.5 Goles", "Probabilidad": f"{props_data['over_25_prob']}%", "Cuota Justa Mínima": f"@{props_data['over_25_fair_odds']}"},
-                        {"Mercado": "Menos de 2.5 Goles", "Probabilidad": f"{props_data['under_25_prob']}%", "Cuota Justa Mínima": f"@{props_data['under_25_fair_odds']}"},
-                        {"Mercado": "Más de 3.5 Goles", "Probabilidad": f"{props_data['over_35_prob']}%", "Cuota Justa Mínima": f"@{props_data['over_35_fair_odds']}"},
-                    ]
-                    st.dataframe(pd.DataFrame(goals_table), use_container_width=True, hide_index=True)
-
-                with col_p2:
-                    st.markdown("##### 🧩 Combos Mismo Partido (Bet Builder):")
-                    combos_table = [
-                        {"Combo Bet Builder": "Local Gana Y Más de 1.5 Goles", "Probabilidad": f"{props_data['combo_home_over15_prob']}%", "Cuota Justa Mínima": f"@{props_data['combo_home_over15_fair_odds']}"},
-                        {"Combo Bet Builder": "Local Gana Y Ambos Anotan", "Probabilidad": f"{props_data['combo_home_btts_prob']}%", "Cuota Justa Mínima": f"@{props_data['combo_home_btts_fair_odds']}"},
-                        {"Combo Bet Builder": "Empate Y Menos de 2.5 Goles", "Probabilidad": f"{props_data['combo_draw_under25_prob']}%", "Cuota Justa Mínima": f"@{props_data['combo_draw_under25_fair_odds']}"},
-                    ]
-                    st.dataframe(pd.DataFrame(combos_table), use_container_width=True, hide_index=True)
-                    st.caption("💡 **Cómo usar esto en BetPlay o Rushbet:** En la app de tu casa, usa la opción 'Crea tu Apuesta'. Si la cuota que te ofrece la casa es MAYOR a la Cuota Justa Mínima de la tabla, tienes una apuesta con ventaja matemática positiva (+EV).")
-
-# ------------------------------------------------------------------------------
 # TAB 2: CONTABILIDAD, BANKROLL Y AUDITORÍA (SQLite + Plotly)
 # ------------------------------------------------------------------------------
 with tab_audit:
