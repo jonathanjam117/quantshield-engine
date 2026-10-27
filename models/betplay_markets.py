@@ -21,6 +21,7 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from scipy.stats import poisson
+from models.ai_context_agent import get_ai_field
 
 
 def build_bivariate_poisson(lambda_h: float, lambda_a: float, max_goals: int = 9) -> np.ndarray:
@@ -358,7 +359,7 @@ def generate_betplay_same_game_parlays(
     # AI context adjustment boost if available
     rho_3 = 1.22
     if ai_adjustment is not None:
-        conf = getattr(ai_adjustment, "confianza_ia", 0.8)
+        conf = float(get_ai_field(ai_adjustment, "confianza_ia", 0.8))
         rho_3 *= (1.0 + (conf - 0.5) * 0.2)
 
     raw_prob_t3 = legs_t3[0]["prob"] * legs_t3[1]["prob"] * legs_t3[2]["prob"]

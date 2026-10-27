@@ -16,6 +16,7 @@ import numpy as np
 from scipy.stats import poisson
 
 from etl.historical_loader import load_historical_forces
+from models.ai_context_agent import get_ai_field
 from models.kelly_risk import calculate_kelly_stake, evaluate_opportunity_filters
 
 
@@ -175,8 +176,8 @@ def analyze_soccer_match(
     lambda_h_base = lambda_h
     lambda_a_base = lambda_a
     if ai_adjustment is not None:
-        f_h = getattr(ai_adjustment, "factor_ajuste_local", 1.0)
-        f_a = getattr(ai_adjustment, "factor_ajuste_visita", 1.0)
+        f_h = float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0))
+        f_a = float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0))
         lambda_h = float(np.clip(lambda_h_base * f_h, 0.35, 4.50))
         lambda_a = float(np.clip(lambda_a_base * f_a, 0.35, 4.50))
         source_desc += f" + IA Gemini (H: {f_h:.2f}x | A: {f_a:.2f}x)"
@@ -281,11 +282,11 @@ def analyze_soccer_match(
                 "dutching": dutching,
                 "lambdas": f"λH: {lambda_h} | λA: {lambda_a} ({source_desc})",
                 "ai_adjustment": {
-                    "factor_local": getattr(ai_adjustment, "factor_ajuste_local", 1.0),
-                    "factor_visita": getattr(ai_adjustment, "factor_ajuste_visita", 1.0),
-                    "confianza": getattr(ai_adjustment, "confianza_ia", 0.8),
-                    "riesgo": getattr(ai_adjustment, "nivel_riesgo", "Bajo"),
-                    "justificacion": getattr(ai_adjustment, "justificacion_tactica", ""),
+                    "factor_local": float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0)),
+                    "factor_visita": float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0)),
+                    "confianza": float(get_ai_field(ai_adjustment, "confianza_ia", 0.8)),
+                    "riesgo": str(get_ai_field(ai_adjustment, "nivel_riesgo", "Bajo")),
+                    "justificacion": str(get_ai_field(ai_adjustment, "justificacion_tactica", "")),
                 } if ai_adjustment is not None else None,
             })
 
@@ -324,11 +325,11 @@ def analyze_soccer_match(
         pass
 
     ai_adj_dict = {
-        "factor_local": getattr(ai_adjustment, "factor_ajuste_local", 1.0),
-        "factor_visita": getattr(ai_adjustment, "factor_ajuste_visita", 1.0),
-        "confianza": getattr(ai_adjustment, "confianza_ia", 0.8),
-        "riesgo": getattr(ai_adjustment, "nivel_riesgo", "Bajo"),
-        "justificacion": getattr(ai_adjustment, "justificacion_tactica", ""),
+        "factor_local": float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0)),
+        "factor_visita": float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0)),
+        "confianza": float(get_ai_field(ai_adjustment, "confianza_ia", 0.8)),
+        "riesgo": str(get_ai_field(ai_adjustment, "nivel_riesgo", "Bajo")),
+        "justificacion": str(get_ai_field(ai_adjustment, "justificacion_tactica", "")),
     } if ai_adjustment is not None else None
 
     # Evaluar casas recreacionales colombianas para mercados de Goles y BTTS

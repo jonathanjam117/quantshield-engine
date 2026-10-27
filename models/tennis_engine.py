@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 from models.kelly_risk import calculate_kelly_stake, evaluate_opportunity_filters
+from models.ai_context_agent import get_ai_field
 
 
 def extract_vig_free_tennis(bookmaker_dict: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -87,8 +88,8 @@ def analyze_tennis_match(
 
     # Apply AI tactical weighting (surface adaptation, fatigue, recent form)
     if ai_adjustment is not None:
-        f1 = getattr(ai_adjustment, "factor_ajuste_local", 1.0)
-        f2 = getattr(ai_adjustment, "factor_ajuste_visita", 1.0)
+        f1 = float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0))
+        f2 = float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0))
         w1 = p1_clean * f1
         w2 = p2_clean * f2
         tot_w = w1 + w2
@@ -174,11 +175,11 @@ def analyze_tennis_match(
                             "dutching": None,
                             "lambdas": f"Prob. Oráculo: {round(p_fair*100, 1)}%",
                             "ai_adjustment": {
-                                "factor_local": getattr(ai_adjustment, "factor_ajuste_local", 1.0),
-                                "factor_visita": getattr(ai_adjustment, "factor_ajuste_visita", 1.0),
-                                "confianza": getattr(ai_adjustment, "confianza_ia", 0.8),
-                                "riesgo": getattr(ai_adjustment, "nivel_riesgo", "Bajo"),
-                                "justificacion": getattr(ai_adjustment, "justificacion_tactica", ""),
+                                "factor_local": float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0)),
+                                "factor_visita": float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0)),
+                                "confianza": float(get_ai_field(ai_adjustment, "confianza_ia", 0.8)),
+                                "riesgo": str(get_ai_field(ai_adjustment, "nivel_riesgo", "Bajo")),
+                                "justificacion": str(get_ai_field(ai_adjustment, "justificacion_tactica", "")),
                             } if ai_adjustment is not None else None,
                         })
 

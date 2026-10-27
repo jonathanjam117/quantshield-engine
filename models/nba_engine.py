@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 from scipy.stats import norm
 from models.kelly_risk import calculate_kelly_stake, evaluate_opportunity_filters
+from models.ai_context_agent import get_ai_field
 
 # Standard deviations of points in basketball
 NBA_TOTALS_STD = 11.5
@@ -71,8 +72,8 @@ def analyze_nba_match(
 
     # Adjust base total with Gemini AI pace and scoring factor
     if ai_adjustment is not None:
-        f_local = getattr(ai_adjustment, "factor_ajuste_local", 1.0)
-        f_visita = getattr(ai_adjustment, "factor_ajuste_visita", 1.0)
+        f_local = float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0))
+        f_visita = float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0))
         pace_factor = (f_local + f_visita) / 2.0
         base_total = round(base_total * pace_factor, 1)
 
@@ -158,11 +159,11 @@ def analyze_nba_match(
                             "dutching": None,
                             "lambdas": f"Línea Base: {base_total} | σ: {std_totals}",
                             "ai_adjustment": {
-                                "factor_local": getattr(ai_adjustment, "factor_ajuste_local", 1.0),
-                                "factor_visita": getattr(ai_adjustment, "factor_ajuste_visita", 1.0),
-                                "confianza": getattr(ai_adjustment, "confianza_ia", 0.8),
-                                "riesgo": getattr(ai_adjustment, "nivel_riesgo", "Bajo"),
-                                "justificacion": getattr(ai_adjustment, "justificacion_tactica", ""),
+                                "factor_local": float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0)),
+                                "factor_visita": float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0)),
+                                "confianza": float(get_ai_field(ai_adjustment, "confianza_ia", 0.8)),
+                                "riesgo": str(get_ai_field(ai_adjustment, "nivel_riesgo", "Bajo")),
+                                "justificacion": str(get_ai_field(ai_adjustment, "justificacion_tactica", "")),
                             } if ai_adjustment is not None else None,
                         })
 
@@ -185,8 +186,8 @@ def analyze_nba_match(
                     diff = spread - base_spread
                     # Adjust margin with AI factors (up to +/- 3 points)
                     if ai_adjustment is not None:
-                        f_local = getattr(ai_adjustment, "factor_ajuste_local", 1.0)
-                        f_visita = getattr(ai_adjustment, "factor_ajuste_visita", 1.0)
+                        f_local = float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0))
+                        f_visita = float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0))
                         shift = (f_local - f_visita) * 3.5
                         if team_name == home:
                             diff += shift
@@ -245,11 +246,11 @@ def analyze_nba_match(
                             "dutching": None,
                             "lambdas": f"Línea Spread: {spread:+.1f} | σ: {std_spreads}",
                             "ai_adjustment": {
-                                "factor_local": getattr(ai_adjustment, "factor_ajuste_local", 1.0),
-                                "factor_visita": getattr(ai_adjustment, "factor_ajuste_visita", 1.0),
-                                "confianza": getattr(ai_adjustment, "confianza_ia", 0.8),
-                                "riesgo": getattr(ai_adjustment, "nivel_riesgo", "Bajo"),
-                                "justificacion": getattr(ai_adjustment, "justificacion_tactica", ""),
+                                "factor_local": float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0)),
+                                "factor_visita": float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0)),
+                                "confianza": float(get_ai_field(ai_adjustment, "confianza_ia", 0.8)),
+                                "riesgo": str(get_ai_field(ai_adjustment, "nivel_riesgo", "Bajo")),
+                                "justificacion": str(get_ai_field(ai_adjustment, "justificacion_tactica", "")),
                             } if ai_adjustment is not None else None,
                         })
 

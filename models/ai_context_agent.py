@@ -56,6 +56,56 @@ class TacticalAdjustment(BaseModel):
     )
 
 
+def get_ai_field(ai_obj: Any, field: str, default: Any = "") -> Any:
+    """Helper universal de extracción segura para campos de análisis táctico / IA.
+
+    Maneja con total seguridad:
+    - None (retorna default)
+    - Diccionarios (dict)
+    - Modelos Pydantic (TacticalAdjustment)
+    - Objetos genéricos con atributos
+
+    Soporta mapeo bidireccional de sinónimos comunes:
+    - nivel_riesgo <-> riesgo
+    - justificacion_tactica <-> justificacion
+    - confianza_ia <-> confianza
+    - factor_ajuste_local <-> factor_local
+    - factor_ajuste_visita <-> factor_visita
+    """
+    if ai_obj is None:
+        return default
+
+    alias_map = {
+        "nivel_riesgo": ["riesgo", "risk", "nivel_riesgo"],
+        "riesgo": ["nivel_riesgo", "risk", "riesgo"],
+        "justificacion_tactica": ["justificacion", "justificacion_tactica", "justification"],
+        "justificacion": ["justificacion_tactica", "justificacion", "justification"],
+        "confianza_ia": ["confianza", "confianza_ia", "confidence"],
+        "confianza": ["confianza_ia", "confianza", "confidence"],
+        "factor_ajuste_local": ["factor_local", "factor_ajuste_local", "factor_h"],
+        "factor_local": ["factor_ajuste_local", "factor_local", "factor_h"],
+        "factor_ajuste_visita": ["factor_visita", "factor_ajuste_visita", "factor_a"],
+        "factor_visita": ["factor_ajuste_visita", "factor_visita", "factor_a"],
+    }
+    candidates = alias_map.get(field, [field])
+
+    # 1. Si es diccionario
+    if isinstance(ai_obj, dict):
+        for c in candidates:
+            if c in ai_obj and ai_obj[c] is not None:
+                return ai_obj[c]
+        return default
+
+    # 2. Si es objeto Pydantic o clase Python
+    for c in candidates:
+        if hasattr(ai_obj, c):
+            val = getattr(ai_obj, c, None)
+            if val is not None:
+                return val
+
+    return default
+
+
 def generar_ajuste_simulado(
     deporte: str,
     torneo: str,
