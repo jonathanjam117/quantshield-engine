@@ -55,6 +55,29 @@ class TacticalAdjustment(BaseModel):
         description="Explicación concisa de máximo 2 líneas detallando por qué se ajustaron las probabilidades.",
     )
 
+    def __getitem__(self, item: str) -> Any:
+        alias_map = {
+            "riesgo": "nivel_riesgo",
+            "justificacion": "justificacion_tactica",
+            "confianza": "confianza_ia",
+            "factor_local": "factor_ajuste_local",
+            "factor_visita": "factor_ajuste_visita",
+        }
+        target = alias_map.get(item, item)
+        return getattr(self, target, None)
+
+    def get(self, item: str, default: Any = None) -> Any:
+        alias_map = {
+            "riesgo": "nivel_riesgo",
+            "justificacion": "justificacion_tactica",
+            "confianza": "confianza_ia",
+            "factor_local": "factor_ajuste_local",
+            "factor_visita": "factor_ajuste_visita",
+        }
+        target = alias_map.get(item, item)
+        val = getattr(self, target, None)
+        return val if val is not None else default
+
 
 def get_ai_field(ai_obj: Any, field: str, default: Any = "") -> Any:
     """Helper universal de extracción segura para campos de análisis táctico / IA.
@@ -104,6 +127,17 @@ def get_ai_field(ai_obj: Any, field: str, default: Any = "") -> Any:
                 return val
 
     return default
+
+
+safe_ai_get = get_ai_field
+
+DEFAULT_TACTICAL_ADJUSTMENT = TacticalAdjustment(
+    factor_ajuste_local=1.0,
+    factor_ajuste_visita=1.0,
+    confianza_ia=0.80,
+    nivel_riesgo="Bajo",
+    justificacion_tactica="Análisis estadístico base sin alteraciones tácticas.",
+)
 
 
 def generar_ajuste_simulado(
@@ -381,6 +415,9 @@ REGLAS DE EVALUACIÓN:
 
     except Exception as err:
         # Graceful fallback on network/quota error: provide simulated response with notice
-        sim = generar_ajuste_simulado(deporte, torneo, local, visita, contexto_usuario)
-        sim.justificacion_tactica += f" (Ajuste estimado de contingencia: no se pudo consultar Gemini)"
-        return sim
+        try:
+            sim = generar_ajuste_simulado(deporte, torneo, local, visita, contexto_usuario)
+            sim.justificacion_tactica += f" (Ajuste estimado de contingencia: no se pudo consultar Gemini)"
+            return sim
+        except Exception:
+            return DEFAULT_TACTICAL_ADJUSTMENT

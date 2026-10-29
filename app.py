@@ -95,40 +95,56 @@ def format_money(amount: float, curr_code: str = "COP") -> str:
         return f"${amount:,.2f} USD"
 
 
-def get_ai_field(ai_obj: Any, field: str, default: Any = "") -> Any:
-    """Helper universal de extracción segura para campos de análisis táctico / IA.
-    Maneja con total seguridad: None, diccionarios (dict), objetos Pydantic y clases genéricas.
-    """
-    if ai_obj is None:
+def safe_ai_get(obj: Any, key: str, default: Any = "") -> Any:
+    """Helper universal de extracción segura para campos de análisis táctico / IA."""
+    if obj is None:
         return default
 
     alias_map = {
-        "nivel_riesgo": ["riesgo", "risk", "nivel_riesgo"],
-        "riesgo": ["nivel_riesgo", "risk", "riesgo"],
-        "justificacion_tactica": ["justificacion", "justificacion_tactica", "justification"],
-        "justificacion": ["justificacion_tactica", "justificacion", "justification"],
-        "confianza_ia": ["confianza", "confianza_ia", "confidence"],
-        "confianza": ["confianza_ia", "confianza", "confidence"],
-        "factor_ajuste_local": ["factor_local", "factor_ajuste_local", "factor_h"],
-        "factor_local": ["factor_ajuste_local", "factor_local", "factor_h"],
-        "factor_ajuste_visita": ["factor_visita", "factor_ajuste_visita", "factor_a"],
-        "factor_visita": ["factor_ajuste_visita", "factor_visita", "factor_a"],
+        "nivel_riesgo": "riesgo",
+        "riesgo": "nivel_riesgo",
+        "justificacion_tactica": "justificacion",
+        "justificacion": "justificacion_tactica",
+        "confianza_ia": "confianza",
+        "confianza": "confianza_ia",
+        "factor_ajuste_local": "factor_local",
+        "factor_local": "factor_ajuste_local",
+        "factor_ajuste_visita": "factor_visita",
+        "factor_visita": "factor_ajuste_visita",
     }
-    candidates = alias_map.get(field, [field])
 
-    if isinstance(ai_obj, dict):
-        for c in candidates:
-            if c in ai_obj and ai_obj[c] is not None:
-                return ai_obj[c]
+    if isinstance(obj, dict):
+        if key in obj and obj[key] is not None:
+            return obj[key]
+        alt = alias_map.get(key)
+        if alt and alt in obj and obj[alt] is not None:
+            return obj[alt]
         return default
 
-    for c in candidates:
-        if hasattr(ai_obj, c):
-            val = getattr(ai_obj, c, None)
+    # Attribute access
+    if hasattr(obj, key):
+        val = getattr(obj, key, None)
+        if val is not None:
+            return val
+    alt = alias_map.get(key)
+    if alt and hasattr(obj, alt):
+        val = getattr(obj, alt, None)
+        if val is not None:
+            return val
+
+    # Dictionary-style get fallback on object
+    if hasattr(obj, "get") and callable(getattr(obj, "get")):
+        try:
+            val = obj.get(key, default)
             if val is not None:
                 return val
+        except Exception:
+            pass
 
     return default
+
+
+get_ai_field = safe_ai_get
 
 
 # Ensure quantshield_engine directory is on sys.path
@@ -165,7 +181,9 @@ from models.parlay_engine import (
 )
 from models.ai_context_agent import (
     TacticalAdjustment,
+    DEFAULT_TACTICAL_ADJUSTMENT,
     get_ai_field,
+    safe_ai_get,
     evaluar_contexto_partido,
     verificar_conexion_gemini,
     GEMINI_MODELS,
@@ -636,7 +654,7 @@ for event in events:
                 break
 
     # Evaluate Gemini AI tactical context if enabled
-    ai_adj = None
+    ai_adj = DEFAULT_TACTICAL_ADJUSTMENT
     if ai_tactical_enabled:
         if match_key in st.session_state.match_ai_adjustments:
             ai_adj = st.session_state.match_ai_adjustments[match_key]
@@ -650,17 +668,20 @@ for event in events:
                             odds_snapshot[o.get("name", "")] = o.get("price", 0.0)
 
             user_notes = st.session_state.match_user_notes.get(match_key, "")
-            ai_adj = evaluar_contexto_partido(
-                deporte=category_selected,
-                torneo=selected_meta.get("name", ""),
-                local=home_team,
-                visita=away_team,
-                cuotas_actuales=odds_snapshot,
-                contexto_usuario=user_notes,
-                api_key=gemini_api_key_input.strip() if gemini_api_key_input else None,
-                model_name=selected_gemini_model,
-                is_demo=False,
-            )
+            try:
+                ai_adj = evaluar_contexto_partido(
+                    deporte=category_selected,
+                    torneo=selected_meta.get("name", ""),
+                    local=home_team,
+                    visita=away_team,
+                    cuotas_actuales=odds_snapshot,
+                    contexto_usuario=user_notes,
+                    api_key=gemini_api_key_input.strip() if gemini_api_key_input else None,
+                    model_name=selected_gemini_model,
+                    is_demo=False,
+                )
+            except Exception:
+                ai_adj = DEFAULT_TACTICAL_ADJUSTMENT
             st.session_state.match_ai_adjustments[match_key] = ai_adj
 
     event_opps: List[Dict[str, Any]] = []
@@ -849,33 +870,33 @@ with tab_betplay:
                 unsafe_allow_html=True,
             )
 
-            # AI Context Box if available
-            if ai_adj:
-                nivel_riesgo = str(get_ai_field(ai_adj, "nivel_riesgo", "Bajo")).capitalize()
-                risk_color = "#10b981" if nivel_riesgo == "Bajo" else ("#f59e0b" if nivel_riesgo == "Medio" else "#ef4444")
-                confianza_val = float(get_ai_field(ai_adj, "confianza_ia", 0.80))
-                justificacion_val = str(get_ai_field(ai_adj, "justificacion_tactica", "Análisis estadístico base sin alteraciones tácticas."))
-                f_local_val = float(get_ai_field(ai_adj, "factor_ajuste_local", 1.0))
-                f_visita_val = float(get_ai_field(ai_adj, "factor_ajuste_visita", 1.0))
-                st.markdown(
-                    f"""
-                    <div style="background-color: #0f192d; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; border-left: 4px solid #8b5cf6;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                            <span style="font-weight: 700; color: #c084fc; font-size: 0.9em;">🧠 Contexto Táctico Gemini ({selected_gemini_model})</span>
-                            <span style="background-color: {risk_color}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.78em; font-weight: 700;">
-                                Riesgo {nivel_riesgo} (Confianza: {int(confianza_val*100)}%)
-                            </span>
-                        </div>
-                        <div style="font-size: 0.82em; margin-bottom: 4px; color: #94a3b8;">
-                            Multiplicador Local: <code style="color: #60a5fa;">{f_local_val:.2f}x</code> | Multiplicador Visita: <code style="color: #f472b6;">{f_visita_val:.2f}x</code>
-                        </div>
-                        <div style="color: #cbd5e1; font-size: 0.85em; font-style: italic;">
-                            "{justificacion_val}"
-                        </div>
+            # AI Context Box
+            ai_adj_card = ai_adj or DEFAULT_TACTICAL_ADJUSTMENT
+            nivel_riesgo_str = str(safe_ai_get(ai_adj_card, "nivel_riesgo", "Bajo")).strip().capitalize()
+            risk_color = "#10b981" if "Bajo" in nivel_riesgo_str else ("#f59e0b" if "Medio" in nivel_riesgo_str else "#ef4444")
+            confianza_val = float(safe_ai_get(ai_adj_card, "confianza_ia", 0.80))
+            justificacion_val = str(safe_ai_get(ai_adj_card, "justificacion_tactica", "Análisis estadístico base sin alteraciones tácticas."))
+            f_local_val = float(safe_ai_get(ai_adj_card, "factor_ajuste_local", 1.0))
+            f_visita_val = float(safe_ai_get(ai_adj_card, "factor_ajuste_visita", 1.0))
+            st.markdown(
+                f"""
+                <div style="background-color: #0f192d; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; border-left: 4px solid #8b5cf6;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <span style="font-weight: 700; color: #c084fc; font-size: 0.9em;">🧠 Contexto Táctico Gemini ({selected_gemini_model})</span>
+                        <span style="background-color: {risk_color}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.78em; font-weight: 700;">
+                            Riesgo {nivel_riesgo_str} (Confianza: {int(confianza_val*100)}%)
+                        </span>
                     </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                    <div style="font-size: 0.82em; margin-bottom: 4px; color: #94a3b8;">
+                        Multiplicador Local: <code style="color: #60a5fa;">{f_local_val:.2f}x</code> | Multiplicador Visita: <code style="color: #f472b6;">{f_visita_val:.2f}x</code>
+                    </div>
+                    <div style="color: #cbd5e1; font-size: 0.85em; font-style: italic;">
+                        "{justificacion_val}"
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
             # ----------------------------------------------------------------------
             # SECCIÓN 1: CARDS "COMBINADAS PARA TI" (BETPLAY STYLE CONNECTED DOTS)
@@ -1103,7 +1124,7 @@ with tab_betplay:
 
 
     except Exception as e:
-        st.error("⚠️ Error en pestaña Centro de Partido & Combinadas BetPlay: " + str(e))
+        st.warning(f"Error cargando sección: {e}")
 
 # ------------------------------------------------------------------------------
 # TAB 2: CARTELERA GENERAL (+EV FINDER)
@@ -1270,34 +1291,33 @@ with tab_scanner:
                         st.metric("Stake Óptimo", formatted_stake_str)
 
                     # AI Context Agent Verdict Box
-                    if opp.get("ai_adjustment"):
-                        ai_res = opp["ai_adjustment"]
-                        nivel_riesgo = str(get_ai_field(ai_res, "nivel_riesgo", "Bajo")).capitalize()
-                        risk_color = "#10b981" if nivel_riesgo == "Bajo" else ("#f59e0b" if nivel_riesgo == "Medio" else "#ef4444")
-                        confianza_pct = int(float(get_ai_field(ai_res, "confianza_ia", 0.80)) * 100)
-                        factor_loc = float(get_ai_field(ai_res, "factor_ajuste_local", 1.0))
-                        factor_vis = float(get_ai_field(ai_res, "factor_ajuste_visita", 1.0))
-                        justificacion_txt = str(get_ai_field(ai_res, "justificacion_tactica", "Análisis estadístico base sin alteraciones tácticas."))
-                        st.markdown(
-                            f"""
-                            <div style="background-color: #1e293b; border-radius: 8px; padding: 12px; margin: 10px 0; border-left: 4px solid #8b5cf6;">
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                                    <span style="font-weight: 700; color: #c084fc;">🧠 Veredicto Táctico Gemini ({selected_gemini_model})</span>
-                                    <span style="background-color: {risk_color}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 700;">
-                                        Riesgo {nivel_riesgo} (Confianza: {confianza_pct}%)
-                                    </span>
-                                </div>
-                                <div style="font-size: 0.88em; margin-bottom: 6px; color: #94a3b8;">
-                                    Multiplicador Local: <code style="color: #60a5fa;">{factor_loc:.2f}x</code> | 
-                                    Multiplicador Visita: <code style="color: #f472b6;">{factor_vis:.2f}x</code>
-                                </div>
-                                <div style="font-style: italic; color: #f1f5f9; font-size: 0.9em;">
-                                    "{justificacion_txt}"
-                                </div>
+                    ai_res = opp.get("ai_adjustment") or DEFAULT_TACTICAL_ADJUSTMENT
+                    nivel_riesgo_str = str(safe_ai_get(ai_res, "nivel_riesgo", "Bajo")).strip().capitalize()
+                    risk_color = "#10b981" if "Bajo" in nivel_riesgo_str else ("#f59e0b" if "Medio" in nivel_riesgo_str else "#ef4444")
+                    confianza_pct = int(float(safe_ai_get(ai_res, "confianza_ia", 0.80)) * 100)
+                    factor_loc = float(safe_ai_get(ai_res, "factor_ajuste_local", 1.0))
+                    factor_vis = float(safe_ai_get(ai_res, "factor_ajuste_visita", 1.0))
+                    justificacion_txt = str(safe_ai_get(ai_res, "justificacion_tactica", "Análisis estadístico base sin alteraciones tácticas."))
+                    st.markdown(
+                        f"""
+                        <div style="background-color: #1e293b; border-radius: 8px; padding: 12px; margin: 10px 0; border-left: 4px solid #8b5cf6;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                <span style="font-weight: 700; color: #c084fc;">🧠 Veredicto Táctico Gemini ({selected_gemini_model})</span>
+                                <span style="background-color: {risk_color}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 700;">
+                                    Riesgo {nivel_riesgo_str} (Confianza: {confianza_pct}%)
+                                </span>
                             </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
+                            <div style="font-size: 0.88em; margin-bottom: 6px; color: #94a3b8;">
+                                Multiplicador Local: <code style="color: #60a5fa;">{factor_loc:.2f}x</code> | 
+                                Multiplicador Visita: <code style="color: #f472b6;">{factor_vis:.2f}x</code>
+                            </div>
+                            <div style="font-style: italic; color: #f1f5f9; font-size: 0.9em;">
+                                "{justificacion_txt}"
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
                     # Interactive Breaking News Injection
                     st.markdown("##### ⚡ Novedad de Última Hora & Recálculo en Vivo:")
@@ -1411,7 +1431,7 @@ with tab_scanner:
                     st.markdown("---")
                     btn_key = f"save_bet_{idx}_{opp['match']}_{opp['market']}_{opp['bookmaker']}"
                     if st.button(f"💾 Registrar Apuesta ({col_bm_selected} @ {user_live_odd})", key=btn_key):
-                        ai_justification_text = str(get_ai_field(opp.get("ai_adjustment"), "justificacion_tactica", "")) if opp.get("ai_adjustment") else ""
+                        ai_justification_text = str(safe_ai_get(opp.get("ai_adjustment"), "justificacion_tactica", "")) if opp.get("ai_adjustment") else ""
                         combined_notes = opp.get("lambdas", "")
                         if ai_justification_text:
                             combined_notes = f"{combined_notes} | IA: {ai_justification_text}"
@@ -1444,7 +1464,7 @@ with tab_scanner:
 
 
     except Exception as e:
-        st.error("⚠️ Error en pestaña Cartelera General (+EV Finder): " + str(e))
+        st.warning(f"Error cargando sección: {e}")
 
 # TAB 2: CONTABILIDAD, BANKROLL Y AUDITORÍA (SQLite + Plotly)
 # ------------------------------------------------------------------------------
@@ -1609,7 +1629,7 @@ with tab_audit:
 
 
     except Exception as e:
-        st.error("⚠️ Error en pestaña Contabilidad & Auditoría (SQLite): " + str(e))
+        st.warning(f"Error cargando sección: {e}")
 
 # ------------------------------------------------------------------------------
 # TAB 3: ALERTAS MÓVILES (Telegram Bot)
@@ -1715,7 +1735,7 @@ with tab_telegram:
 
 
     except Exception as e:
-        st.error("⚠️ Error en pestaña Alertas Móviles (Telegram): " + str(e))
+        st.warning(f"Error cargando sección: {e}")
 
 # ------------------------------------------------------------------------------
 # TAB 4: SIMULADOR HISTÓRICO (BACKTESTING)
@@ -1948,5 +1968,5 @@ with tab_simulator:
                 st.info("ℹ️ No se generaron apuestas con los filtros actuales. Prueba relajando el EV mínimo o habilitando más mercados.")
 
     except Exception as e:
-        st.error("⚠️ Error en pestaña Simulador Histórico (Backtesting): " + str(e))
+        st.warning(f"Error cargando sección: {e}")
 
