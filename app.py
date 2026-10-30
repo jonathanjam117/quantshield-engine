@@ -998,6 +998,270 @@ with tab_betplay:
                         st.success(f"¡Combinada guardada con éxito en la base de datos (ID #{new_id})!")
 
             # ----------------------------------------------------------------------
+            # SUB-SECCIÓN INTERACTIVA: SIMULADOR DE JORNADA "QUÉ PASA SI APUESTO MAÑANA"
+            # ----------------------------------------------------------------------
+            st.markdown("---")
+            with st.expander("🔮 Proyección de Ganancias para Mañana (Simulador en Vivo - What-If)", expanded=True):
+                st.caption(
+                    "Simula con precisión matemática qué pasará con tu dinero mañana antes de apostar en BetPlay. "
+                    "Ajusta los montos a apostar y selecciona los escenarios para proyectar en tiempo real tus ganancias y bankroll."
+                )
+
+                # Construir lista de apuestas recomendadas para la jornada / partido actual
+                sim_candidate_bets = []
+                for idx_c, card_item in enumerate(sgp_cards):
+                    sim_candidate_bets.append({
+                        "id": f"card_{idx_c}",
+                        "name": card_item["badge"],
+                        "desc": card_item["risk_label"],
+                        "odds": float(card_item["odds"]),
+                        "stake": float(card_item["recommended_stake"]),
+                        "type": "Combinada SGP",
+                    })
+
+                # Añadir la mejor opción de seguridad DNB si existe
+                fav_is_home = betplay_cat["lambdas"]["home"] >= betplay_cat["lambdas"]["away"]
+                dnb_key = "dnb_home" if fav_is_home else "dnb_away"
+                dnb_pick = betplay_cat["block_dnb"].get(dnb_key)
+                if dnb_pick and dnb_pick.get("retail_odds", 0) >= 1.10:
+                    dnb_stake = float(dnb_pick["rec_stake"]) if dnb_pick.get("has_value") else round(bankroll_val * 0.015, -2 if bankroll_val >= 10000 else 1)
+                    sim_candidate_bets.append({
+                        "id": "dnb_pick",
+                        "name": f"🛡️ {dnb_pick['name']}",
+                        "desc": "Mercado de Seguridad Directo (Reembolso si Empate)",
+                        "odds": float(dnb_pick["retail_odds"]),
+                        "stake": dnb_stake,
+                        "type": "Mercado Directo",
+                    })
+
+                st.markdown("##### 📝 1. Configura tus Apuestas para Mañana:")
+
+                step_stake = 1000.0 if selected_curr_code == "COP" else 5.0
+                all_sim_stakes = []
+                all_sim_retornos = []
+                all_sim_ganancias = []
+
+                for idx_b, b_item in enumerate(sim_candidate_bets):
+                    with st.container(border=True):
+                        c_b1, c_b2, c_b3, c_b4 = st.columns([2.4, 1.4, 1.8, 1.4])
+
+                        with c_b1:
+                            inc = st.checkbox("Incluir", value=True, key=f"sim_inc_{selected_match_idx}_{idx_b}")
+                            st.markdown(f"**{b_item['name']}**")
+                            st.caption(f"🏟️ `{cur_match_name}` | Cuota: **@{b_item['odds']:.2f}**")
+
+                        with c_b2:
+                            stk = st.number_input(
+                                f"Monto ({selected_curr_code}):",
+                                min_value=0.0,
+                                value=float(b_item["stake"]),
+                                step=step_stake,
+                                key=f"sim_stake_{selected_match_idx}_{idx_b}",
+                                disabled=not inc,
+                            )
+
+                        with c_b3:
+                            scen = st.selectbox(
+                                "Escenario Mañana:",
+                                options=[
+                                    "✅ Se cumple (Ganada)",
+                                    "🔄 Reembolso / Empate (Push)",
+                                    "❌ No se cumple (Perdida)",
+                                ],
+                                index=0,
+                                key=f"sim_scen_{selected_match_idx}_{idx_b}",
+                                disabled=not inc,
+                            )
+
+                        with c_b4:
+                            if not inc or stk <= 0:
+                                ret_val = 0.0
+                                gan_val = 0.0
+                                badge_html = "<span style='color: #64748b; font-weight: 600;'>⚪ Desactivada</span><br/><small style='color: #475569;'>No apostar</small>"
+                            else:
+                                if "Ganada" in scen:
+                                    ret_val = stk * b_item["odds"]
+                                    gan_val = stk * (b_item["odds"] - 1.0)
+                                    badge_html = f"<span style='color: #34d399; font-weight: 800; font-size: 1.05rem;'>+{format_money(gan_val, selected_curr_code)}</span><br/><small style='color: #94a3b8;'>Retorno: {format_money(ret_val, selected_curr_code)}</small>"
+                                elif "Reembolso" in scen:
+                                    ret_val = stk
+                                    gan_val = 0.0
+                                    badge_html = f"<span style='color: #fbbf24; font-weight: 700; font-size: 0.95rem;'>$0 (Push)</span><br/><small style='color: #94a3b8;'>Recuperas: {format_money(ret_val, selected_curr_code)}</small>"
+                                else:
+                                    ret_val = 0.0
+                                    gan_val = -stk
+                                    badge_html = f"<span style='color: #f87171; font-weight: 800; font-size: 1.05rem;'>-{format_money(stk, selected_curr_code)}</span><br/><small style='color: #94a3b8;'>Retorno: $0</small>"
+
+                            render_clean_html(f"<div style='padding-top: 6px;'>{badge_html}</div>")
+
+                        if inc:
+                            all_sim_stakes.append(stk)
+                            all_sim_retornos.append(ret_val)
+                            all_sim_ganancias.append(gan_val)
+
+                # ------------------------------------------------------------------
+                # PASO 2: TABLERO DE RESULTADOS FINANCIEROS DEL DÍA SIGUIENTE
+                # ------------------------------------------------------------------
+                tot_inversion = sum(all_sim_stakes)
+                tot_retorno = sum(all_sim_retornos)
+                ganancia_neta_dia = sum(all_sim_ganancias)
+                roi_dia = (ganancia_neta_dia / tot_inversion * 100.0) if tot_inversion > 0 else 0.0
+                nuevo_bankroll = bankroll_val + ganancia_neta_dia
+                delta_bankroll_pct = ((nuevo_bankroll - bankroll_val) / bankroll_val * 100.0) if bankroll_val > 0 else 0.0
+
+                st.markdown("##### 📊 2. Balance Financiero Proyectado de Mañana:")
+                with st.container(border=True):
+                    col_met1, col_met2, col_met3, col_met4 = st.columns(4)
+
+                    with col_met1:
+                        st.metric(
+                            label="💰 Inversión Total del Día",
+                            value=format_money(tot_inversion, selected_curr_code),
+                            help="Suma total de dinero que destinas a las apuestas de mañana.",
+                        )
+
+                    with col_met2:
+                        diff_retorno = tot_retorno - tot_inversion
+                        diff_label = f"+{format_money(diff_retorno, selected_curr_code)}" if diff_retorno >= 0 else f"-{format_money(abs(diff_retorno), selected_curr_code)}"
+                        st.metric(
+                            label="📥 Retorno Total a Recibir",
+                            value=format_money(tot_retorno, selected_curr_code),
+                            delta=diff_label if tot_inversion > 0 else None,
+                            help="Dinero total bruto que entrará a tu cuenta BetPlay al finalizar.",
+                        )
+
+                    with col_met3:
+                        net_label = f"+{format_money(ganancia_neta_dia, selected_curr_code)}" if ganancia_neta_dia >= 0 else f"-{format_money(abs(ganancia_neta_dia), selected_curr_code)}"
+                        st.metric(
+                            label="💵 Ganancia Neta Libre",
+                            value=net_label,
+                            delta=f"{roi_dia:+.1f}% ROI" if tot_inversion > 0 else None,
+                            help="Utilidad real limpia que te queda tras descontar lo apostado.",
+                        )
+
+                    with col_met4:
+                        st.metric(
+                            label="🏦 Nuevo Bankroll Proyectado",
+                            value=format_money(nuevo_bankroll, selected_curr_code),
+                            delta=f"{delta_bankroll_pct:+.1f}% Bankroll" if bankroll_val > 0 else None,
+                            help="Capital total que tendrás disponible para la siguiente jornada.",
+                        )
+
+                # ------------------------------------------------------------------
+                # PASO 3: BOLETO COMBINADO CRUZADO (PARLAY DE JORNADA)
+                # ------------------------------------------------------------------
+                st.markdown("##### 🚀 3. ¿Y si combino los partidos recomendados de mañana en un solo boleto?")
+
+                cross_matches_legs = []
+                for ev_i, ev_item in enumerate(events[:5]):
+                    e_home = ev_item.get("home_team", "Local")
+                    e_away = ev_item.get("away_team", "Visita")
+                    e_title = f"{e_home} vs {e_away}"
+                    e_lam_h = float(ev_item.get("lambda_h", 1.35))
+                    e_lam_a = float(ev_item.get("lambda_a", 1.05))
+
+                    if ev_i == selected_match_idx and sgp_cards:
+                        pick_card = sgp_cards[0]
+                        cross_matches_legs.append({
+                            "match": e_title,
+                            "pick_title": f"{pick_card['badge']}",
+                            "selection_text": f"{pick_card['legs'][0]['selection']}",
+                            "odds": pick_card["odds"],
+                            "prob": pick_card["prob_pct"] / 100.0,
+                        })
+                    else:
+                        ev_cat_tmp = calculate_betplay_security_catalog(e_home, e_away, e_lam_h, e_lam_a, bankroll=bankroll_val)
+                        ev_cards_tmp = generate_betplay_same_game_parlays(ev_cat_tmp, bankroll=bankroll_val)
+                        if ev_cards_tmp:
+                            pick_c = ev_cards_tmp[0]
+                            cross_matches_legs.append({
+                                "match": e_title,
+                                "pick_title": f"{pick_c['badge']}",
+                                "selection_text": f"{pick_c['legs'][0]['selection']}",
+                                "odds": pick_c["odds"],
+                                "prob": pick_c["prob_pct"] / 100.0,
+                            })
+
+                if not cross_matches_legs:
+                    cross_matches_legs = [{
+                        "match": cur_match_name,
+                        "pick_title": "🛡️ COMBINADA BLINDADA",
+                        "selection_text": "Doble Oportunidad + Goles Favorito",
+                        "odds": 1.68,
+                        "prob": 0.65,
+                    }]
+
+                cuota_cruzada = 1.0
+                prob_conjunta = 1.0
+                for c_leg in cross_matches_legs:
+                    cuota_cruzada *= c_leg["odds"]
+                    prob_conjunta *= c_leg["prob"]
+                cuota_cruzada = round(cuota_cruzada, 2)
+                prob_conjunta_pct = round(prob_conjunta * 100.0, 1)
+
+                default_cross_stake = round(bankroll_val * 0.02, -2 if bankroll_val >= 10000 else 1)
+                default_cross_stake = max(1000.0 if selected_curr_code == "COP" else 1.0, default_cross_stake)
+
+                with st.container(border=True):
+                    col_p1, col_p2 = st.columns([1.8, 1.2])
+
+                    with col_p1:
+                        st.markdown(f"**Boleto Combinado Cruzado ({len(cross_matches_legs)} Partidos de la Fecha):**")
+                        for idx_cl, leg_data in enumerate(cross_matches_legs):
+                            st.markdown(
+                                f"• **{leg_data['match']}** ➔ `{leg_data['pick_title']}` "
+                                f"<small style='color: #94a3b8;'>({leg_data['selection_text']})</small> "
+                                f"<span style='color: #fbbf24; font-weight: 700;'>@{leg_data['odds']:.2f}</span>"
+                            )
+
+                    with col_p2:
+                        cross_stake_input = st.number_input(
+                            f"Inversión Boleto (1 unidad / 2% bankroll):",
+                            min_value=0.0,
+                            value=float(default_cross_stake),
+                            step=step_stake,
+                            key=f"cross_parlay_stake_{selected_match_idx}",
+                        )
+                        retorno_cruzado = round(cross_stake_input * cuota_cruzada, 2)
+                        ganancia_cruzada = round(cross_stake_input * (cuota_cruzada - 1.0), 2)
+
+                    col_cmet1, col_cmet2, col_cmet3, col_cmet4 = st.columns(4)
+                    with col_cmet1:
+                        st.metric("Cuota Total Cruzada", f"@{cuota_cruzada:.2f}")
+                    with col_cmet2:
+                        st.metric("Prob. Conjunta Modelo", f"{prob_conjunta_pct}%")
+                    with col_cmet3:
+                        st.metric("Retorno Proyectado", format_money(retorno_cruzado, selected_curr_code))
+                    with col_cmet4:
+                        st.metric(
+                            "Ganancia Neta Si Acierta",
+                            f"+{format_money(ganancia_cruzada, selected_curr_code)}",
+                            delta=f"{((cuota_cruzada - 1.0)*100):.0f}% Retorno",
+                        )
+
+                    btn_cross_key = f"save_cross_parlay_{selected_match_idx}"
+                    if st.button("💾 Guardar Boleto Combinado Cruzado en SQLite", key=btn_cross_key, use_container_width=True):
+                        cross_summary = " + ".join([f"{l['match']}: {l['pick_title']} (@{l['odds']:.2f})" for l in cross_matches_legs])
+                        cid = add_bet(
+                            sport="Boleto Cruzado / Parlay de Jornada",
+                            tournament=curr_event.get("sport_title", selected_meta.get("name", "Fútbol")),
+                            match=f"Boleto Cruzado {len(cross_matches_legs)} Partidos",
+                            market="Parlay Cruzado de Jornada (What-If)",
+                            selection=" & ".join([f"{l['match']} ({l['pick_title']})" for l in cross_matches_legs]),
+                            bookmaker="BetPlay",
+                            odds=cuota_cruzada,
+                            fair_odds=round(1.0 / (prob_conjunta if prob_conjunta > 0 else 0.01), 2),
+                            ev_percent=round(((prob_conjunta * cuota_cruzada) - 1.0) * 100.0, 2),
+                            stake=cross_stake_input,
+                            status="Pendiente",
+                            notes=f"Parlay cruzado con las selecciones más seguras de la jornada. {cross_summary}",
+                            ai_analysis="",
+                        )
+                        st.toast(f"✅ ¡Boleto Combinado Cruzado guardado en SQLite (ID #{cid})!", icon="💾")
+                        st.success(f"¡Boleto Combinado Cruzado registrado con éxito (ID #{cid})!")
+
+
+            # ----------------------------------------------------------------------
             # SECCIÓN 2: SÁBANA UNIFICADA DE MERCADOS DE SEGURIDAD BETPLAY
             # ----------------------------------------------------------------------
             st.markdown("---")
