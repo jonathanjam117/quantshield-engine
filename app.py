@@ -179,7 +179,7 @@ from database.db_manager import (
     set_initial_bankroll,
 )
 from etl.odds_api_client import fetch_odds, get_available_sports
-from models.soccer_engine import analyze_soccer_match
+from models.soccer_engine import analyze_soccer_match, resolve_event_lambdas
 from models.tennis_engine import analyze_tennis_match
 from models.nba_engine import analyze_nba_match
 from models.betplay_markets import (
@@ -816,10 +816,9 @@ with tab_betplay:
                     "<span style='background-color: #1e3a5f; color: #38bdf8; padding: 6px 12px; border-radius: 8px; font-weight: 700; font-size: 0.88em;'>"
                     "⚡ BetPlay Verified</span></div>")
 
-            # Expected Goals & Poisson resolution
+            # Expected Goals & Poisson resolution (Dynamically resolved per team/event)
             adv_props = curr_event.get("advanced_poisson_props", {})
-            lam_h = float(curr_event.get("lambda_h", adv_props.get("lambda_h", 1.35)))
-            lam_a = float(curr_event.get("lambda_a", adv_props.get("lambda_a", 1.05)))
+            lam_h, lam_a, _ = resolve_event_lambdas(curr_event, selected_meta, ai_adjustment=ai_adj)
             ai_adj = st.session_state.match_ai_adjustments.get(cur_match_name)
 
             # Extract Colombian retail odds from event bookmakers
@@ -1157,30 +1156,53 @@ with tab_betplay:
                     e_home = ev_item.get("home_team", "Local")
                     e_away = ev_item.get("away_team", "Visita")
                     e_title = f"{e_home} vs {e_away}"
-                    e_lam_h = float(ev_item.get("lambda_h", 1.35))
-                    e_lam_a = float(ev_item.get("lambda_a", 1.05))
 
+                    # 1. Resolve dynamic Poisson lambdas for this fixture
+                    e_ai_adj = st.session_state.match_ai_adjustments.get(e_title)
+                    e_lam_h, e_lam_a, _ = resolve_event_lambdas(ev_item, selected_meta, ai_adjustment=e_ai_adj)
+
+                    # 2. Extract Colombian retail odds for this fixture
+                    e_retail_odds = {}
+                    for bm in ev_item.get("bookmakers", []):
+                        if bm.get("key", "").lower() != "pinnacle":
+                            for m in bm.get("markets", []):
+                                if m.get("key") == "h2h":
+                                    for o in m.get("outcomes", []):
+                                        if o.get("name") == e_home:
+                                            e_retail_odds["1"] = o.get("price", 0.0)
+                                        elif o.get("name") in ("Draw", "Empate", "X"):
+                                            e_retail_odds["X"] = o.get("price", 0.0)
+                                        elif o.get("name") == e_away:
+                                            e_retail_odds["2"] = o.get("price", 0.0)
+
+                    # 3. Calculate catalog and Same-Game Parlay cards for this fixture
                     if ev_i == selected_match_idx and sgp_cards:
                         pick_card = sgp_cards[0]
+                    else:
+                        ev_cat_tmp = calculate_betplay_security_catalog(
+                            home_team=e_home,
+                            away_team=e_away,
+                            lambda_h=e_lam_h,
+                            lambda_a=e_lam_a,
+                            bankroll=bankroll_val,
+                            retail_odds=e_retail_odds,
+                        )
+                        ev_cards_tmp = generate_betplay_same_game_parlays(
+                            catalog=ev_cat_tmp,
+                            bankroll=bankroll_val,
+                            ai_adjustment=e_ai_adj,
+                        )
+                        pick_card = ev_cards_tmp[0] if ev_cards_tmp else None
+
+                    if pick_card:
+                        sel_text = pick_card["legs"][0]["selection"] if pick_card.get("legs") else "Doble Oportunidad"
                         cross_matches_legs.append({
                             "match": e_title,
-                            "pick_title": f"{pick_card['badge']}",
-                            "selection_text": f"{pick_card['legs'][0]['selection']}",
-                            "odds": pick_card["odds"],
-                            "prob": pick_card["prob_pct"] / 100.0,
+                            "pick_title": pick_card.get("badge", "🛡️ COMBINADA BLINDADA"),
+                            "selection_text": sel_text,
+                            "odds": float(pick_card["odds"]),
+                            "prob": float(pick_card.get("prob_pct", 60.0)) / 100.0,
                         })
-                    else:
-                        ev_cat_tmp = calculate_betplay_security_catalog(e_home, e_away, e_lam_h, e_lam_a, bankroll=bankroll_val)
-                        ev_cards_tmp = generate_betplay_same_game_parlays(ev_cat_tmp, bankroll=bankroll_val)
-                        if ev_cards_tmp:
-                            pick_c = ev_cards_tmp[0]
-                            cross_matches_legs.append({
-                                "match": e_title,
-                                "pick_title": f"{pick_c['badge']}",
-                                "selection_text": f"{pick_c['legs'][0]['selection']}",
-                                "odds": pick_c["odds"],
-                                "prob": pick_c["prob_pct"] / 100.0,
-                            })
 
                 if not cross_matches_legs:
                     cross_matches_legs = [{
@@ -1209,9 +1231,8 @@ with tab_betplay:
                         st.markdown(f"**Boleto Combinado Cruzado ({len(cross_matches_legs)} Partidos de la Fecha):**")
                         for idx_cl, leg_data in enumerate(cross_matches_legs):
                             st.markdown(
-                                f"• **{leg_data['match']}** ➔ `{leg_data['pick_title']}` "
-                                f"<small style='color: #94a3b8;'>({leg_data['selection_text']})</small> "
-                                f"<span style='color: #fbbf24; font-weight: 700;'>@{leg_data['odds']:.2f}</span>"
+                                f"• **{leg_data['match']}** → :green-background[{leg_data['pick_title']}] "
+                                f":gray[({leg_data['selection_text']})] **:orange[@{leg_data['odds']:.2f}]**"
                             )
 
                     with col_p2:
@@ -1223,20 +1244,33 @@ with tab_betplay:
                             key=f"cross_parlay_stake_{selected_match_idx}",
                         )
                         retorno_cruzado = round(cross_stake_input * cuota_cruzada, 2)
-                        ganancia_cruzada = round(cross_stake_input * (cuota_cruzada - 1.0), 2)
+                        ganancia_cruzada = round(retorno_cruzado - cross_stake_input, 2)
 
                     col_cmet1, col_cmet2, col_cmet3, col_cmet4 = st.columns(4)
                     with col_cmet1:
-                        st.metric("Cuota Total Cruzada", f"@{cuota_cruzada:.2f}")
+                        st.metric(
+                            "Cuota Total Acumulada",
+                            f"@{cuota_cruzada:.2f}",
+                            help="Producto matemático de las cuotas de los partidos del boleto.",
+                        )
                     with col_cmet2:
-                        st.metric("Prob. Conjunta Modelo", f"{prob_conjunta_pct}%")
+                        st.metric(
+                            "Prob. Conjunta Modelo",
+                            f"{prob_conjunta_pct}%",
+                            help="Probabilidad matemática conjunta de acierto de todas las selecciones.",
+                        )
                     with col_cmet3:
-                        st.metric("Retorno Proyectado", format_money(retorno_cruzado, selected_curr_code))
+                        st.metric(
+                            "Ganancia Potencial Total ($)",
+                            format_money(retorno_cruzado, selected_curr_code),
+                            help="Retorno bruto total a recibir (Inversión Boleto * Cuota Total Acumulada).",
+                        )
                     with col_cmet4:
                         st.metric(
-                            "Ganancia Neta Si Acierta",
-                            f"+{format_money(ganancia_cruzada, selected_curr_code)}",
-                            delta=f"{((cuota_cruzada - 1.0)*100):.0f}% Retorno",
+                            "Utilidad Neta ($)",
+                            f"+{format_money(ganancia_cruzada, selected_curr_code)}" if ganancia_cruzada >= 0 else format_money(ganancia_cruzada, selected_curr_code),
+                            delta=f"{((cuota_cruzada - 1.0)*100):.0f}% Retorno" if cuota_cruzada > 1.0 else None,
+                            help="Beneficio neto libre tras descontar el monto apostado (Ganancia Potencial Total - Inversión Boleto).",
                         )
 
                     btn_cross_key = f"save_cross_parlay_{selected_match_idx}"

@@ -68,6 +68,59 @@ def extract_vig_free_h2h(bookmaker_dict: Dict[str, Any]) -> Optional[Dict[str, f
     return None
 
 
+def resolve_event_lambdas(
+    event: Dict[str, Any],
+    sport_meta: Optional[Dict[str, Any]] = None,
+    ai_adjustment: Optional[Any] = None,
+) -> Tuple[float, float, str]:
+    """Resolves and caches dynamic Poisson lambdas (lambda_h, lambda_a) for an event
+    using Football-Data CSV, Oracle vig-free probabilities, or league averages,
+    adjusted by Gemini AI if provided.
+    """
+    if "lambda_h" in event and "lambda_a" in event:
+        return float(event["lambda_h"]), float(event["lambda_a"]), str(event.get("lambda_source", "Cache"))
+
+    home_team = event.get("home_team", "")
+    away_team = event.get("away_team", "")
+    bookmakers = event.get("bookmakers", [])
+
+    oracle_data = None
+    if bookmakers:
+        pinnacle_bm = next((b for b in bookmakers if b.get("key") == "pinnacle"), None)
+        if pinnacle_bm:
+            oracle_data = extract_vig_free_h2h(pinnacle_bm)
+        if not oracle_data:
+            for b in bookmakers:
+                od = extract_vig_free_h2h(b)
+                if od:
+                    oracle_data = od
+                    break
+
+    oracle_probs = (oracle_data["p_clean_h"], oracle_data["p_clean_x"], oracle_data["p_clean_a"]) if oracle_data else None
+    csv_code = sport_meta.get("csv_code") if sport_meta else None
+
+    lh, la, src = load_historical_forces(
+        csv_code=csv_code,
+        home_team=home_team,
+        away_team=away_team,
+        oracle_probs=oracle_probs,
+    )
+
+    if ai_adjustment is not None:
+        f_h = float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0))
+        f_a = float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0))
+        lh = float(np.clip(lh * f_h, 0.35, 4.50))
+        la = float(np.clip(la * f_a, 0.35, 4.50))
+        src += f" + IA Gemini (H: {f_h:.2f}x | A: {f_a:.2f}x)"
+
+    lh = round(float(lh), 2)
+    la = round(float(la), 2)
+    event["lambda_h"] = lh
+    event["lambda_a"] = la
+    event["lambda_source"] = src
+    return lh, la, src
+
+
 def calculate_poisson_matrix(lambda_h: float, lambda_a: float, max_goals: int = 9) -> np.ndarray:
     """Generates a 9x9 Bivariate Poisson probability matrix (scores 0 to 8).
     M[i, j] = P(Home = i) * P(Away = j)
@@ -163,24 +216,12 @@ def analyze_soccer_match(
     p_clean_x = oracle_data["p_clean_x"]
     p_clean_a = oracle_data["p_clean_a"]
 
-    # 2. Historical Forces & Lambdas
-    csv_code = sport_meta.get("csv_code")
-    lambda_h, lambda_a, source_desc = load_historical_forces(
-        csv_code=csv_code,
-        home_team=home_team,
-        away_team=away_team,
-        oracle_probs=(p_clean_h, p_clean_x, p_clean_a),
+    # 2. Historical Forces & Lambdas (Dynamically resolved and attached to event)
+    lambda_h, lambda_a, source_desc = resolve_event_lambdas(
+        event=event,
+        sport_meta=sport_meta,
+        ai_adjustment=ai_adjustment,
     )
-
-    # Apply Gemini AI tactical adjustment to expected goals (xG / lambdas)
-    lambda_h_base = lambda_h
-    lambda_a_base = lambda_a
-    if ai_adjustment is not None:
-        f_h = float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0))
-        f_a = float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0))
-        lambda_h = float(np.clip(lambda_h_base * f_h, 0.35, 4.50))
-        lambda_a = float(np.clip(lambda_a_base * f_a, 0.35, 4.50))
-        source_desc += f" + IA Gemini (H: {f_h:.2f}x | A: {f_a:.2f}x)"
 
     # 3. 9x9 Poisson Matrix
     poisson_mat = calculate_poisson_matrix(lambda_h, lambda_a, max_goals=9)
