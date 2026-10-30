@@ -24,6 +24,17 @@ from scipy.stats import poisson
 from models.ai_context_agent import get_ai_field
 
 
+def estimate_retail_odds(prob: float, margin: float = 0.95) -> float:
+    """Calcula la cuota estimada de casa con margen (overround del 5%) acotando probabilidad máxima a 0.94.
+    Fórmula requerida:
+    p_clamped = min(max(prob, 0.05), 0.94)
+    cuota_estimada = round(max(1.05, (1.0 / p_clamped) * margin), 2)
+    Garantiza que ninguna cuota sea menor a 1.05 ni derive de p > 0.94.
+    """
+    p_clamped = min(max(float(prob), 0.05), 0.94)
+    return round(max(1.05, (1.0 / p_clamped) * margin), 2)
+
+
 def build_bivariate_poisson(lambda_h: float, lambda_a: float, max_goals: int = 9) -> np.ndarray:
     """Generates a 10x10 bivariate Poisson probability matrix normalized to sum 1.0."""
     mat = np.zeros((max_goals + 1, max_goals + 1), dtype=float)
@@ -136,13 +147,16 @@ def calculate_betplay_security_catalog(
     def _item(
         name: str,
         prob: float,
-        default_retail_odds: float,
+        default_retail_odds: Optional[float] = None,
         retail_key: str = "",
         min_ev_thresh: float = 2.0,
     ) -> Dict[str, Any]:
-        p = max(0.001, min(0.999, prob))
-        fair = 1.0 / p
-        actual_odds = float(retail.get(retail_key, default_retail_odds))
+        p = max(0.001, min(0.999, float(prob)))
+        fair = round(1.0 / p, 2)
+        computed_default = estimate_retail_odds(p, margin=0.95)
+        def_odds = default_retail_odds if default_retail_odds is not None else computed_default
+        raw_val = retail.get(retail_key, def_odds)
+        actual_odds = round(max(1.05, float(raw_val)), 2)
         ev = (p * actual_odds) - 1.0
         ev_pct = round(ev * 100.0, 2)
         has_val = ev_pct >= min_ev_thresh
@@ -161,8 +175,8 @@ def calculate_betplay_security_catalog(
         return {
             "name": name,
             "prob_pct": round(p * 100.0, 1),
-            "fair_odds": round(fair, 2),
-            "retail_odds": round(actual_odds, 2),
+            "fair_odds": fair,
+            "retail_odds": actual_odds,
             "ev_pct": ev_pct,
             "has_value": has_val,
             "rec_stake": rec_stake,
@@ -177,56 +191,57 @@ def calculate_betplay_security_catalog(
         "lambdas": {"home": round(lambda_h, 2), "away": round(lambda_a, 2), "total": round(tot_lam, 2)},
         # Bloque 1: 1X2 & Doble Oportunidad
         "block_1x2": {
-            "home": _item(f"Victoria {home_team} (1)", p_h, round(1.0 / p_h * 0.94, 2), "1"),
-            "draw": _item("Empate (X)", p_x, round(1.0 / p_x * 0.94, 2), "X"),
-            "away": _item(f"Victoria {away_team} (2)", p_a, round(1.0 / p_a * 0.94, 2), "2"),
+            "home": _item(f"Victoria {home_team} (1)", p_h, estimate_retail_odds(p_h, 0.94), "1"),
+            "draw": _item("Empate (X)", p_x, estimate_retail_odds(p_x, 0.94), "X"),
+            "away": _item(f"Victoria {away_team} (2)", p_a, estimate_retail_odds(p_a, 0.94), "2"),
         },
         "block_double_chance": {
-            "1X": _item(f"{home_team} o Empate (1X)", p_1x, round(1.0 / p_1x * 0.95, 2), "1X"),
-            "12": _item(f"{home_team} o {away_team} (12)", p_12, round(1.0 / p_12 * 0.95, 2), "12"),
-            "X2": _item(f"Empate o {away_team} (X2)", p_x2, round(1.0 / p_x2 * 0.95, 2), "X2"),
+            "1X": _item(f"{home_team} o Empate (1X)", p_1x, estimate_retail_odds(p_1x, 0.95), "1X"),
+            "12": _item(f"{home_team} o {away_team} (12)", p_12, estimate_retail_odds(p_12, 0.95), "12"),
+            "X2": _item(f"Empate o {away_team} (X2)", p_x2, estimate_retail_odds(p_x2, 0.95), "X2"),
         },
         # Bloque 2: Apuesta sin Empate (DNB)
         "block_dnb": {
-            "dnb_home": _item(f"{home_team} (Sin Empate)", p_dnb_h, round(1.0 / p_dnb_h * 0.95, 2), "DNB_H"),
-            "dnb_away": _item(f"{away_team} (Sin Empate)", p_dnb_a, round(1.0 / p_dnb_a * 0.95, 2), "DNB_A"),
+            "dnb_home": _item(f"{home_team} (Sin Empate)", p_dnb_h, estimate_retail_odds(p_dnb_h, 0.95), "DNB_H"),
+            "dnb_away": _item(f"{away_team} (Sin Empate)", p_dnb_a, estimate_retail_odds(p_dnb_a, 0.95), "DNB_A"),
         },
         # Bloque 3: Total Goles por Equipo (Individual)
         "block_team_goals_home": {
-            "over_05": _item(f"{home_team}: Más de 0.5 Goles", p_h_over05, round(1.0 / p_h_over05 * 0.95, 2), "H_O05"),
-            "under_05": _item(f"{home_team}: Menos de 0.5 Goles", p_h_under05, round(1.0 / p_h_under05 * 0.95, 2), "H_U05"),
-            "over_15": _item(f"{home_team}: Más de 1.5 Goles", p_h_over15, round(1.0 / p_h_over15 * 0.95, 2), "H_O15"),
-            "under_15": _item(f"{home_team}: Menos de 1.5 Goles", p_h_under15, round(1.0 / p_h_under15 * 0.95, 2), "H_U15"),
-            "over_25": _item(f"{home_team}: Más de 2.5 Goles", p_h_over25, round(1.0 / p_h_over25 * 0.95, 2), "H_O25"),
+            "over_05": _item(f"{home_team}: Más de 0.5 Goles", p_h_over05, estimate_retail_odds(p_h_over05, 0.95), "H_O05"),
+            "under_05": _item(f"{home_team}: Menos de 0.5 Goles", p_h_under05, estimate_retail_odds(p_h_under05, 0.95), "H_U05"),
+            "over_15": _item(f"{home_team}: Más de 1.5 Goles", p_h_over15, estimate_retail_odds(p_h_over15, 0.95), "H_O15"),
+            "under_15": _item(f"{home_team}: Menos de 1.5 Goles", p_h_under15, estimate_retail_odds(p_h_under15, 0.95), "H_U15"),
+            "over_25": _item(f"{home_team}: Más de 2.5 Goles", p_h_over25, estimate_retail_odds(p_h_over25, 0.95), "H_O25"),
         },
         "block_team_goals_away": {
-            "over_05": _item(f"{away_team}: Más de 0.5 Goles", p_a_over05, round(1.0 / p_a_over05 * 0.95, 2), "A_O05"),
-            "under_05": _item(f"{away_team}: Menos de 0.5 Goles", p_a_under05, round(1.0 / p_a_under05 * 0.95, 2), "A_U05"),
-            "over_15": _item(f"{away_team}: Más de 1.5 Goles", p_a_over15, round(1.0 / p_a_over15 * 0.95, 2), "A_O15"),
-            "under_15": _item(f"{away_team}: Menos de 1.5 Goles", p_a_under15, round(1.0 / p_a_under15 * 0.95, 2), "A_U15"),
-            "over_25": _item(f"{away_team}: Más de 2.5 Goles", p_a_over25, round(1.0 / p_a_over25 * 0.95, 2), "A_O25"),
+            "over_05": _item(f"{away_team}: Más de 0.5 Goles", p_a_over05, estimate_retail_odds(p_a_over05, 0.95), "A_O05"),
+            "under_05": _item(f"{away_team}: Menos de 0.5 Goles", p_a_under05, estimate_retail_odds(p_a_under05, 0.95), "A_U05"),
+            "over_15": _item(f"{away_team}: Más de 1.5 Goles", p_a_over15, estimate_retail_odds(p_a_over15, 0.95), "A_O15"),
+            "under_15": _item(f"{away_team}: Menos de 1.5 Goles", p_a_under15, estimate_retail_odds(p_a_under15, 0.95), "A_U15"),
+            "over_25": _item(f"{away_team}: Más de 2.5 Goles", p_a_over25, estimate_retail_odds(p_a_over25, 0.95), "A_O25"),
         },
         # Bloque 4: Ambos Marcan & Gol en Ambas Mitades
         "block_btts": {
-            "btts_yes": _item("Ambos Equipos Anotan: Sí", p_btts_yes, round(1.0 / p_btts_yes * 0.95, 2), "BTTS_Y"),
-            "btts_no": _item("Ambos Equipos Anotan: No", p_btts_no, round(1.0 / p_btts_no * 0.95, 2), "BTTS_N"),
+            "btts_yes": _item("Ambos Equipos Anotan: Sí", p_btts_yes, estimate_retail_odds(p_btts_yes, 0.95), "BTTS_Y"),
+            "btts_no": _item("Ambos Equipos Anotan: No", p_btts_no, estimate_retail_odds(p_btts_no, 0.95), "BTTS_N"),
         },
         "block_both_halves": {
-            "halves_yes": _item("Gol en Ambas Mitades: Sí", p_both_halves_yes, round(1.0 / p_both_halves_yes * 0.95, 2), "HALF_Y"),
-            "halves_no": _item("Gol en Ambas Mitades: No", p_both_halves_no, round(1.0 / p_both_halves_no * 0.95, 2), "HALF_N"),
-            "first_half_over05": _item("1ª Mitad: Más de 0.5 Goles", p_goal_1h, round(1.0 / p_goal_1h * 0.95, 2), "1H_O05"),
+            "halves_yes": _item("Gol en Ambas Mitades: Sí", p_both_halves_yes, estimate_retail_odds(p_both_halves_yes, 0.95), "HALF_Y"),
+            "halves_no": _item("Gol en Ambas Mitades: No", p_both_halves_no, estimate_retail_odds(p_both_halves_no, 0.95), "HALF_N"),
+            "first_half_over05": _item("1ª Mitad: Más de 0.5 Goles", p_goal_1h, estimate_retail_odds(p_goal_1h, 0.95), "1H_O05"),
         },
         # Bloque 5: Bandas de Goles & Combos
         "block_goal_bands": {
-            "band_0_2": _item("Número de Goles: 0 a 2 Goles", p_band_0_2, round(1.0 / p_band_0_2 * 0.94, 2), "BAND_02"),
-            "band_3_4": _item("Número de Goles: 3 a 4 Goles", p_band_3_4, round(1.0 / p_band_3_4 * 0.94, 2), "BAND_34"),
-            "band_5_plus": _item("Número de Goles: 5 o más Goles", p_band_5_plus, round(1.0 / p_band_5_plus * 0.94, 2), "BAND_5P"),
-            "over_15_total": _item("Total Partido: Más de 1.5 Goles", p_over_15_total, round(1.0 / p_over_15_total * 0.95, 2), "TOT_O15"),
+            "band_0_2": _item("Número de Goles: 0 a 2 Goles", p_band_0_2, estimate_retail_odds(p_band_0_2, 0.94), "BAND_02"),
+            "band_3_4": _item("Número de Goles: 3 a 4 Goles", p_band_3_4, estimate_retail_odds(p_band_3_4, 0.94), "BAND_34"),
+            "band_5_plus": _item("Número de Goles: 5 o más Goles", p_band_5_plus, estimate_retail_odds(p_band_5_plus, 0.94), "BAND_5P"),
+            "over_15_total": _item("Total Partido: Más de 1.5 Goles", p_over_15_total, estimate_retail_odds(p_over_15_total, 0.95), "TOT_O15"),
+            "over_25_total": _item("Total Partido: Más de 2.5 Goles", float(1.0 - p_band_0_2), estimate_retail_odds(1.0 - p_band_0_2, 0.95), "TOT_O25"),
         },
         "block_combos": {
-            "h_and_btts": _item(f"{home_team} Gana y Ambos Marcan", p_h_and_btts, round(1.0 / p_h_and_btts * 0.94, 2) if p_h_and_btts > 0 else 999.0, "H_BTTS"),
-            "a_and_btts": _item(f"{away_team} Gana y Ambos Marcan", p_a_and_btts, round(1.0 / p_a_and_btts * 0.94, 2) if p_a_and_btts > 0 else 999.0, "A_BTTS"),
-            "draw_under25": _item("Empate y Menos de 2.5 Goles", p_draw_and_under25, round(1.0 / p_draw_and_under25 * 0.94, 2) if p_draw_and_under25 > 0 else 999.0, "X_U25"),
+            "h_and_btts": _item(f"{home_team} Gana y Ambos Marcan", p_h_and_btts, estimate_retail_odds(p_h_and_btts, 0.94) if p_h_and_btts > 0 else 999.0, "H_BTTS"),
+            "a_and_btts": _item(f"{away_team} Gana y Ambos Marcan", p_a_and_btts, estimate_retail_odds(p_a_and_btts, 0.94) if p_a_and_btts > 0 else 999.0, "A_BTTS"),
+            "draw_under25": _item("Empate y Menos de 2.5 Goles", p_draw_and_under25, estimate_retail_odds(p_draw_and_under25, 0.94) if p_draw_and_under25 > 0 else 999.0, "X_U25"),
         },
     }
 
@@ -237,8 +252,9 @@ def generate_betplay_same_game_parlays(
     kelly_multiplier: float = 0.20,
     ai_adjustment: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    """Builds the 3 'Combinadas para ti' (Same-Game Parlays) with low variance
-    and positive correlation factor, as specified in ADDON_BETPLAY_UI.md Section 2.2.
+    """Builds the 3 'Combinadas para ti' (Same-Game Parlays) with low variance,
+    positive correlation factor, and automatic replacement of low-value (<1.12)
+    lines so each selection provides real value (>= 1.14) and total odds >= 1.50.
     """
     home = catalog["home_team"]
     away = catalog["away_team"]
@@ -250,28 +266,68 @@ def generate_betplay_same_game_parlays(
 
     cards: List[Dict[str, Any]] = []
 
+    def _build_safe_leg(mkt_label: str, item: Dict[str, Any]) -> Dict[str, Any]:
+        p = min(max(item["prob_pct"] / 100.0, 0.05), 0.94)
+        odds = round(max(1.14, float(item["retail_odds"])), 2)
+        return {
+            "market": mkt_label,
+            "selection": item["name"],
+            "odds": odds,
+            "prob": p,
+        }
+
     # --------------------------------------------------------------------------
     # TARJETA 1: 🛡️ Combinada Blindada (Bajo Riesgo - Cuota Objetivo 1.65 - 2.15)
     # --------------------------------------------------------------------------
-    # Selección 1: Doble Oportunidad del favorito
+    # Selección 1: Doble Oportunidad del favorito (o DNB / 1X2 si cuota < 1.12)
     sel1_dc = catalog["block_double_chance"]["1X"] if fav_is_home else catalog["block_double_chance"]["X2"]
-    # Selección 2: Total de Goles Favorito Más de 0.5
+    mkt1 = "Doble Oportunidad"
+    if sel1_dc["retail_odds"] < 1.12:
+        dnb_cand = catalog["block_dnb"]["dnb_home" if fav_is_home else "dnb_away"]
+        if dnb_cand["retail_odds"] >= 1.12:
+            sel1_dc = dnb_cand
+            mkt1 = "Apuesta sin Empate"
+        else:
+            sel1_dc = catalog["block_1x2"]["home" if fav_is_home else "away"]
+            mkt1 = "Resultado Final (1X2)"
+
+    # Selección 2: Total de Goles Favorito (Más de 0.5 -> Más de 1.5 -> Total +2.5 si cuota < 1.12)
     sel2_fg = catalog["block_team_goals_home"]["over_05"] if fav_is_home else catalog["block_team_goals_away"]["over_05"]
-    # Selección 3: 1ª Mitad Más de 0.5 Goles (o Total Partido Más de 1.5)
+    mkt2 = "Total Goles Favorito"
+    if sel2_fg["retail_odds"] < 1.12:
+        cand_o15 = catalog["block_team_goals_home"]["over_15"] if fav_is_home else catalog["block_team_goals_away"]["over_15"]
+        if cand_o15["retail_odds"] >= 1.12:
+            sel2_fg = cand_o15
+            mkt2 = f"Goles {fav_team} (Más de 1.5)"
+        else:
+            sel2_fg = catalog["block_goal_bands"].get("over_25_total") or catalog["block_goal_bands"]["band_3_4"]
+            mkt2 = "Línea de Goles Partido"
+
+    # Selección 3: 1ª Mitad Más de 0.5 Goles (o Gol en Ambas Mitades / Total +1.5 si < 1.12)
     sel3_1h = catalog["block_both_halves"]["first_half_over05"]
+    mkt3 = "Goles 1ª Mitad"
+    if sel3_1h["retail_odds"] < 1.12:
+        cand_halves = catalog["block_both_halves"]["halves_yes"]
+        if cand_halves["retail_odds"] >= 1.12:
+            sel3_1h = cand_halves
+            mkt3 = "Gol en Ambas Mitades"
+        else:
+            sel3_1h = catalog["block_goal_bands"]["over_15_total"]
+            mkt3 = "Total Partido Más de 1.5"
 
     legs_t1 = [
-        {"market": "Doble Oportunidad", "selection": sel1_dc["name"], "odds": sel1_dc["retail_odds"], "prob": sel1_dc["prob_pct"] / 100.0},
-        {"market": "Total Goles Equipo", "selection": sel2_fg["name"], "odds": sel2_fg["retail_odds"], "prob": sel2_fg["prob_pct"] / 100.0},
-        {"market": "Goles 1ª Mitad", "selection": sel3_1h["name"], "odds": sel3_1h["retail_odds"], "prob": sel3_1h["prob_pct"] / 100.0},
+        _build_safe_leg(mkt1, sel1_dc),
+        _build_safe_leg(mkt2, sel2_fg),
+        _build_safe_leg(mkt3, sel3_1h),
     ]
 
     # Correlation boost: favor team winning correlates positively with scoring and 1H goal
     rho_1 = 1.14
     raw_prob_t1 = legs_t1[0]["prob"] * legs_t1[1]["prob"] * legs_t1[2]["prob"]
     p_comb_t1 = min(0.82, max(0.40, raw_prob_t1 * rho_1))
-    odds_comb_t1 = round(legs_t1[0]["odds"] * legs_t1[1]["odds"] * legs_t1[2]["odds"] * 0.94, 2)  # Realistic SGP pricing
-    odds_comb_t1 = max(1.68, odds_comb_t1)
+    raw_odds_t1 = legs_t1[0]["odds"] * legs_t1[1]["odds"] * legs_t1[2]["odds"]
+    odds_comb_t1 = round(raw_odds_t1 * 0.94, 2)  # Realistic SGP pricing
+    odds_comb_t1 = round(max(1.50, odds_comb_t1), 2)
     ev_t1 = (p_comb_t1 * odds_comb_t1) - 1.0
     ev_pct_t1 = round(ev_t1 * 100.0, 2)
 
@@ -281,7 +337,7 @@ def generate_betplay_same_game_parlays(
     f_star1 = (p_comb_t1 * b1 - q1) / b1 if b1 > 0 else 0.0
     stake_pct_t1 = min(0.015, max(0.005, f_star1 * kelly_multiplier * 0.50))
     stake_t1 = round(bankroll * stake_pct_t1, -2) if bankroll >= 10000 else round(bankroll * stake_pct_t1, 1)
-    profit_t1 = round(stake_t1 * (odds_comb_t1 - 1.0), 2)
+    profit_t1 = round(stake_t1 * b1, 2)
 
     cards.append({
         "id": "parlay_shield",
@@ -303,20 +359,50 @@ def generate_betplay_same_game_parlays(
     # TARJETA 2: ⚽ Combinada de Ritmo Ofensivo (Riesgo Medio - Cuota 2.10 - 2.85)
     # --------------------------------------------------------------------------
     sel1_t2 = catalog["block_team_goals_home"]["over_05"]
+    mkt1_t2 = f"Goles {home}"
+    if sel1_t2["retail_odds"] < 1.12:
+        cand_h15 = catalog["block_team_goals_home"]["over_15"]
+        if cand_h15["retail_odds"] >= 1.12:
+            sel1_t2 = cand_h15
+            mkt1_t2 = f"Goles {home} (Más de 1.5)"
+        else:
+            sel1_t2 = catalog["block_goal_bands"].get("over_25_total") or catalog["block_goal_bands"]["band_3_4"]
+            mkt1_t2 = "Línea de Goles Partido"
+
     sel2_t2 = catalog["block_both_halves"]["halves_yes"]
+    mkt2_t2 = "Gol en Ambas Mitades"
+    if sel2_t2["retail_odds"] < 1.12:
+        cand_btts = catalog["block_btts"]["btts_yes"]
+        if cand_btts["retail_odds"] >= 1.12:
+            sel2_t2 = cand_btts
+            mkt2_t2 = "Ambos Equipos Anotan"
+        else:
+            sel2_t2 = catalog["block_goal_bands"]["band_3_4"]
+            mkt2_t2 = "Banda de Goles"
+
     sel3_t2 = catalog["block_goal_bands"]["over_15_total"]
+    mkt3_t2 = "Línea de Goles"
+    if sel3_t2["retail_odds"] < 1.12:
+        cand_tot25 = catalog["block_goal_bands"].get("over_25_total") or catalog["block_goal_bands"]["band_3_4"]
+        if cand_tot25["retail_odds"] >= 1.12:
+            sel3_t2 = cand_tot25
+            mkt3_t2 = "Total Partido Más de 2.5"
+        else:
+            sel3_t2 = catalog["block_btts"]["btts_yes"]
+            mkt3_t2 = "Ambos Equipos Anotan"
 
     legs_t2 = [
-        {"market": "Total Goles Local", "selection": sel1_t2["name"], "odds": sel1_t2["retail_odds"], "prob": sel1_t2["prob_pct"] / 100.0},
-        {"market": "Gol en Ambas Mitades", "selection": sel2_t2["name"], "odds": sel2_t2["retail_odds"], "prob": sel2_t2["prob_pct"] / 100.0},
-        {"market": "Línea de Goles", "selection": sel3_t2["name"], "odds": sel3_t2["retail_odds"], "prob": sel3_t2["prob_pct"] / 100.0},
+        _build_safe_leg(mkt1_t2, sel1_t2),
+        _build_safe_leg(mkt2_t2, sel2_t2),
+        _build_safe_leg(mkt3_t2, sel3_t2),
     ]
 
     rho_2 = 1.18
     raw_prob_t2 = legs_t2[0]["prob"] * legs_t2[1]["prob"] * legs_t2[2]["prob"]
     p_comb_t2 = min(0.70, max(0.30, raw_prob_t2 * rho_2))
-    odds_comb_t2 = round(legs_t2[0]["odds"] * legs_t2[1]["odds"] * legs_t2[2]["odds"] * 0.92, 2)
-    odds_comb_t2 = max(2.15, min(2.85, odds_comb_t2))
+    raw_odds_t2 = legs_t2[0]["odds"] * legs_t2[1]["odds"] * legs_t2[2]["odds"]
+    odds_comb_t2 = round(raw_odds_t2 * 0.92, 2)
+    odds_comb_t2 = round(max(2.10, min(3.50, odds_comb_t2)), 2)
     ev_t2 = (p_comb_t2 * odds_comb_t2) - 1.0
     ev_pct_t2 = round(ev_t2 * 100.0, 2)
 
@@ -325,7 +411,7 @@ def generate_betplay_same_game_parlays(
     f_star2 = (p_comb_t2 * b2 - q2) / b2 if b2 > 0 else 0.0
     stake_pct_t2 = min(0.012, max(0.004, f_star2 * kelly_multiplier * 0.45))
     stake_t2 = round(bankroll * stake_pct_t2, -2) if bankroll >= 10000 else round(bankroll * stake_pct_t2, 1)
-    profit_t2 = round(stake_t2 * (odds_comb_t2 - 1.0), 2)
+    profit_t2 = round(stake_t2 * b2, 2)
 
     cards.append({
         "id": "parlay_offensive",
@@ -346,17 +432,35 @@ def generate_betplay_same_game_parlays(
     # --------------------------------------------------------------------------
     # TARJETA 3: 🚀 Combinada de Valor + IA (Cuota Objetivo 2.85 - 4.20)
     # --------------------------------------------------------------------------
-    sel1_t3 = catalog["block_dnb"]["dnb_home"] if fav_is_home else catalog["block_dnb"]["dnb_away"]
+    sel1_t3 = catalog["block_dnb"]["dnb_home" if fav_is_home else "dnb_away"]
+    mkt1_t3 = "Apuesta sin Empate"
+    if sel1_t3["retail_odds"] < 1.12:
+        sel1_t3 = catalog["block_1x2"]["home" if fav_is_home else "away"]
+        mkt1_t3 = "Resultado Final (1X2)"
+
     sel2_t3 = catalog["block_btts"]["btts_yes"]
+    mkt2_t3 = "Ambos Equipos Anotan"
+    if sel2_t3["retail_odds"] < 1.12:
+        cand_combo = catalog["block_combos"]["h_and_btts" if fav_is_home else "a_and_btts"]
+        if cand_combo["retail_odds"] >= 1.12 and cand_combo["retail_odds"] < 900.0:
+            sel2_t3 = cand_combo
+            mkt2_t3 = "Gana y Ambos Marcan"
+        else:
+            sel2_t3 = catalog["block_goal_bands"].get("over_25_total") or catalog["block_goal_bands"]["band_3_4"]
+            mkt2_t3 = "Total Goles Partido"
+
     sel3_t3 = catalog["block_both_halves"]["halves_yes"]
+    mkt3_t3 = "Gol en Ambas Mitades"
+    if sel3_t3["retail_odds"] < 1.12:
+        sel3_t3 = catalog["block_goal_bands"].get("over_25_total") or catalog["block_goal_bands"]["band_3_4"]
+        mkt3_t3 = "Total Más de 2.5 Goles"
 
     legs_t3 = [
-        {"market": "Apuesta sin Empate", "selection": sel1_t3["name"], "odds": sel1_t3["retail_odds"], "prob": sel1_t3["prob_pct"] / 100.0},
-        {"market": "Ambos Equipos Anotan", "selection": sel2_t3["name"], "odds": sel2_t3["retail_odds"], "prob": sel2_t3["prob_pct"] / 100.0},
-        {"market": "Gol en Ambas Mitades", "selection": sel3_t3["name"], "odds": sel3_t3["retail_odds"], "prob": sel3_t3["prob_pct"] / 100.0},
+        _build_safe_leg(mkt1_t3, sel1_t3),
+        _build_safe_leg(mkt2_t3, sel2_t3),
+        _build_safe_leg(mkt3_t3, sel3_t3),
     ]
 
-    # AI context adjustment boost if available
     rho_3 = 1.22
     if ai_adjustment is not None:
         conf = float(get_ai_field(ai_adjustment, "confianza_ia", 0.8))
@@ -364,8 +468,9 @@ def generate_betplay_same_game_parlays(
 
     raw_prob_t3 = legs_t3[0]["prob"] * legs_t3[1]["prob"] * legs_t3[2]["prob"]
     p_comb_t3 = min(0.55, max(0.22, raw_prob_t3 * rho_3))
-    odds_comb_t3 = round(legs_t3[0]["odds"] * legs_t3[1]["odds"] * legs_t3[2]["odds"] * 0.90, 2)
-    odds_comb_t3 = max(2.95, min(4.30, odds_comb_t3))
+    raw_odds_t3 = legs_t3[0]["odds"] * legs_t3[1]["odds"] * legs_t3[2]["odds"]
+    odds_comb_t3 = round(raw_odds_t3 * 0.90, 2)
+    odds_comb_t3 = round(max(2.85, min(4.50, odds_comb_t3)), 2)
     ev_t3 = (p_comb_t3 * odds_comb_t3) - 1.0
     ev_pct_t3 = round(ev_t3 * 100.0, 2)
 
@@ -374,7 +479,7 @@ def generate_betplay_same_game_parlays(
     f_star3 = (p_comb_t3 * b3 - q3) / b3 if b3 > 0 else 0.0
     stake_pct_t3 = min(0.010, max(0.003, f_star3 * kelly_multiplier * 0.35))
     stake_t3 = round(bankroll * stake_pct_t3, -2) if bankroll >= 10000 else round(bankroll * stake_pct_t3, 1)
-    profit_t3 = round(stake_t3 * (odds_comb_t3 - 1.0), 2)
+    profit_t3 = round(stake_t3 * b3, 2)
 
     cards.append({
         "id": "parlay_value_ai",

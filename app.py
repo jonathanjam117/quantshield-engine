@@ -147,6 +147,19 @@ def safe_ai_get(obj: Any, key: str, default: Any = "") -> Any:
 get_ai_field = safe_ai_get
 
 
+def render_clean_html(html_str: str, container: Any = st) -> None:
+    """Limpia los espacios al inicio de cada línea y elimina comentarios HTML
+    antes de pasar a container.markdown(unsafe_allow_html=True), garantizando que
+    Streamlit jamás interprete el HTML como un bloque de código <pre><code>.
+    """
+    if not html_str:
+        return
+    cleaned = re.sub(r"<!--.*?-->", "", str(html_str), flags=re.DOTALL)
+    html_clean = "\n".join([line.lstrip() for line in cleaned.splitlines() if line.strip()])
+    container.markdown(html_clean, unsafe_allow_html=True)
+
+
+
 # Ensure quantshield_engine directory is on sys.path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
@@ -201,8 +214,7 @@ st.set_page_config(
 # ============================================================
 # PREMIUM MOBILE-FIRST CSS — QuantShield v2
 # ============================================================
-st.markdown(
-    """
+render_clean_html("""
     <style>
     /* === BASE MOBILE VIEWPORT === */
     @media (max-width: 768px) {
@@ -356,9 +368,7 @@ st.markdown(
         }
     }
     </style>
-    """,
-    unsafe_allow_html=True,
-)
+    """)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -388,14 +398,14 @@ initialize_app()
 # ==============================================================================
 # SIDEBAR: CONFIGURATION & PARAMETERS
 # ==============================================================================
-st.sidebar.markdown(
+render_clean_html(
     """
     <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
         <span style="font-size: 2.2rem;">🛡️</span>
         <span style="font-size: 1.6rem; font-weight: 700; color: #3b82f6;">QuantShield</span>
     </div>
     """,
-    unsafe_allow_html=True,
+    container=st.sidebar,
 )
 st.sidebar.caption("Motores Cuantitativos +EV & Baja Varianza")
 
@@ -456,9 +466,9 @@ with col_ai_btn1:
     test_gemini_clicked = st.button("🧪 Probar Clave", use_container_width=True, help="Envía un ping a Google Gemini para verificar tu clave")
 with col_ai_btn2:
     if gemini_api_key_input and gemini_api_key_input.strip():
-        st.markdown("<div style='margin-top: 6px; text-align: center;'><span style='background-color: #059669; color: white; padding: 4px 6px; border-radius: 4px; font-size: 0.78em; font-weight: 700;'>🟢 Clave Lista</span></div>", unsafe_allow_html=True)
+        render_clean_html("<div style='margin-top: 6px; text-align: center;'><span style='background-color: #059669; color: white; padding: 4px 6px; border-radius: 4px; font-size: 0.78em; font-weight: 700;'>🟢 Clave Lista</span></div>")
     else:
-        st.markdown("<div style='margin-top: 6px; text-align: center;'><span style='background-color: #4b5563; color: white; padding: 4px 6px; border-radius: 4px; font-size: 0.78em; font-weight: 600;'>⚪ Simulado</span></div>", unsafe_allow_html=True)
+        render_clean_html("<div style='margin-top: 6px; text-align: center;'><span style='background-color: #4b5563; color: white; padding: 4px 6px; border-radius: 4px; font-size: 0.78em; font-weight: 600;'>⚪ Simulado</span></div>")
 
 if test_gemini_clicked:
     if not gemini_api_key_input or not gemini_api_key_input.strip():
@@ -802,12 +812,9 @@ with tab_betplay:
             cur_match_time = format_to_local_time(curr_event.get("commence_time", ""))
 
             with c_msel2:
-                st.markdown(
-                    "<div style='margin-top: 28px; text-align: right;'>"
+                render_clean_html("<div style='margin-top: 28px; text-align: right;'>"
                     "<span style='background-color: #1e3a5f; color: #38bdf8; padding: 6px 12px; border-radius: 8px; font-weight: 700; font-size: 0.88em;'>"
-                    "⚡ BetPlay Verified</span></div>",
-                    unsafe_allow_html=True,
-                )
+                    "⚡ BetPlay Verified</span></div>")
 
             # Expected Goals & Poisson resolution
             adv_props = curr_event.get("advanced_poisson_props", {})
@@ -847,8 +854,7 @@ with tab_betplay:
             )
 
             # Top Banner: Match Context & Expected Goals
-            st.markdown(
-                f"""
+            render_clean_html(f"""
                 <div style="background: linear-gradient(135deg, #0f192d 0%, #172554 100%); border: 1.5px solid #1e3a5f; border-radius: 12px; padding: 14px 18px; margin: 10px 0 16px 0;">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <div>
@@ -866,9 +872,7 @@ with tab_betplay:
                         </div>
                     </div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """)
 
             # AI Context Box
             ai_adj_card = ai_adj or DEFAULT_TACTICAL_ADJUSTMENT
@@ -878,8 +882,7 @@ with tab_betplay:
             justificacion_val = str(safe_ai_get(ai_adj_card, "justificacion_tactica", "Análisis estadístico base sin alteraciones tácticas."))
             f_local_val = float(safe_ai_get(ai_adj_card, "factor_ajuste_local", 1.0))
             f_visita_val = float(safe_ai_get(ai_adj_card, "factor_ajuste_visita", 1.0))
-            st.markdown(
-                f"""
+            render_clean_html(f"""
                 <div style="background-color: #0f192d; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; border-left: 4px solid #8b5cf6;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                         <span style="font-weight: 700; color: #c084fc; font-size: 0.9em;">🧠 Contexto Táctico Gemini ({selected_gemini_model})</span>
@@ -894,9 +897,7 @@ with tab_betplay:
                         "{justificacion_val}"
                     </div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """)
 
             # ----------------------------------------------------------------------
             # SECCIÓN 1: CARDS "COMBINADAS PARA TI" (BETPLAY STYLE CONNECTED DOTS)
@@ -923,68 +924,60 @@ with tab_betplay:
                     for leg_idx, leg in enumerate(card["legs"]):
                         is_last = (leg_idx == len(card["legs"]) - 1)
                         margin_b = "0px" if is_last else "14px"
-                        legs_html += f"""
-                        <div style="position: relative; margin-bottom: {margin_b};">
-                            <div style="position: absolute; left: -21px; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.9);"></div>
-                            <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; letter-spacing: 0.4px;">
-                                {leg['market']}
-                            </div>
-                            <div style="font-size: 0.88rem; color: #ffffff; font-weight: 700; line-height: 1.3;">
-                                {leg['selection']} <span style="color: #fbbf24; font-size: 0.82rem; font-weight: 800;">@{leg['odds']:.2f}</span>
-                            </div>
-                        </div>
-                        """
+                        legs_html += f'''<div style="position: relative; margin-bottom: {margin_b};">
+<div style="position: absolute; left: -21px; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.9);"></div>
+<div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; letter-spacing: 0.4px;">
+{leg['market']}
+</div>
+<div style="font-size: 0.88rem; color: #ffffff; font-weight: 700; line-height: 1.3;">
+{leg['selection']} <span style="color: #fbbf24; font-size: 0.82rem; font-weight: 800;">@{leg['odds']:.2f}</span>
+</div>
+</div>'''
 
-                    st.markdown(
-                        f"""
-                        <div style="background: #0f192d; border: 1.5px solid {border_color}; border-radius: 14px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.45);">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                <span style="background: {badge_bg}; color: {badge_fg}; font-size: 0.76rem; font-weight: 800; padding: 3px 8px; border-radius: 6px; letter-spacing: 0.5px;">
-                                    {card['badge']}
-                                </span>
-                                <span style="font-size: 0.73rem; color: #94a3b8; font-weight: 600;">{card['risk_label']}</span>
-                            </div>
+                    html_card = f'''<div style="background: #0f192d; border: 1.5px solid {border_color}; border-radius: 14px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.45);">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+<span style="background: {badge_bg}; color: {badge_fg}; font-size: 0.76rem; font-weight: 800; padding: 3px 8px; border-radius: 6px; letter-spacing: 0.5px;">
+{card['badge']}
+</span>
+<span style="font-size: 0.73rem; color: #94a3b8; font-weight: 600;">{card['risk_label']}</span>
+</div>
 
-                            <!-- Connected dots timeline (BetPlay mobile) -->
-                            <div style="position: relative; padding-left: 22px; margin: 14px 0 14px 4px;">
-                                <div style="position: absolute; left: 4px; top: 6px; bottom: 8px; width: 2px; background: linear-gradient(180deg, #f59e0b, #fbbf24);"></div>
-                                {legs_html}
-                            </div>
+<div style="position: relative; padding-left: 22px; margin: 14px 0 14px 4px;">
+<div style="position: absolute; left: 4px; top: 6px; bottom: 8px; width: 2px; background: linear-gradient(180deg, #f59e0b, #fbbf24);"></div>
+{legs_html}
+</div>
 
-                            <!-- Metrics Summary Box -->
-                            <div style="background: #16243f; border-radius: 10px; padding: 10px 12px; margin: 12px 0;">
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                                    <span style="color: #94a3b8; font-size: 0.82rem;">Cuota Combinada:</span>
-                                    <span style="color: #fbbf24; font-weight: 800; font-size: 1.08rem;">@{card['odds']:.2f}</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                                    <span style="color: #94a3b8; font-size: 0.80rem;">Probabilidad Real:</span>
-                                    <span style="color: #38bdf8; font-weight: 700; font-size: 0.88rem;">{card['prob_pct']}%</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                                    <span style="color: #94a3b8; font-size: 0.80rem;">Ventaja (+EV):</span>
-                                    <span style="color: {card_ev_color}; font-weight: 700; font-size: 0.88rem;">{card_ev_str}</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #1e3a5f; padding-top: 6px; margin-top: 6px;">
-                                    <span style="color: #f1f5f9; font-weight: 700; font-size: 0.84rem;">Stake Seguro:</span>
-                                    <span style="color: #34d399; font-weight: 800; font-size: 0.96rem;">{format_money(card['recommended_stake'], selected_curr_code)}</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 2px;">
-                                    <span style="color: #94a3b8; font-size: 0.78rem;">Ganancia Neta:</span>
-                                    <span style="color: #a7f3d0; font-size: 0.82rem; font-weight: 600;">+{format_money(card['potential_profit'], selected_curr_code)}</span>
-                                </div>
-                            </div>
+<div style="background: #16243f; border-radius: 10px; padding: 12px 14px; margin: 12px 0; border: 1px solid #1e3a5f;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+<span style="color: #94a3b8; font-size: 0.84rem; font-weight: 600;">Cuota Total de la Combinada:</span>
+<span style="color: #fbbf24; font-weight: 800; font-size: 1.15rem;">@{card['odds']:.2f}</span>
+</div>
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+<span style="color: #94a3b8; font-size: 0.82rem;">Probabilidad Real Estimada:</span>
+<span style="color: #38bdf8; font-weight: 700; font-size: 0.90rem;">{card['prob_pct']}%</span>
+</div>
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+<span style="color: #94a3b8; font-size: 0.82rem;">Valor Esperado EV:</span>
+<span style="color: {card_ev_color}; font-weight: 700; font-size: 0.90rem;">{card_ev_str}</span>
+</div>
+<div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #1e3a5f; padding-top: 8px; margin-top: 6px;">
+<span style="color: #f1f5f9; font-weight: 700; font-size: 0.86rem;">Stake Sugerido (Kelly):</span>
+<span style="color: #34d399; font-weight: 800; font-size: 1.02rem;">{format_money(card['recommended_stake'], selected_curr_code)}</span>
+</div>
+<div style="display: flex; justify-content: space-between; align-items: center; margin-top: 3px;">
+<span style="color: #94a3b8; font-size: 0.80rem;">Ganancia Neta Potencial:</span>
+<span style="color: #a7f3d0; font-size: 0.85rem; font-weight: 700;">+{format_money(card['potential_profit'], selected_curr_code)}</span>
+</div>
+</div>
 
-                            <!-- BetPlay mobile instruction -->
-                            <div style="background: #091120; border-left: 3px solid #f59e0b; padding: 7px 10px; border-radius: 4px; font-size: 0.76rem; color: #cbd5e1; line-height: 1.35; margin-bottom: 10px;">
-                                📲 <b>En BetPlay:</b> Abre {cur_home} vs {cur_away} ➔ Pestaña <b>'Crea tu Apuesta'</b> ➔ Activa estas selecciones.
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+<div style="background: #091120; border-left: 3px solid #f59e0b; padding: 8px 12px; border-radius: 6px; font-size: 0.78rem; color: #cbd5e1; line-height: 1.4; margin-bottom: 12px;">
+📲 <b>En BetPlay:</b> Abre {cur_home} vs {cur_away} ➔ Pestaña <b>'Crea tu Apuesta'</b> ➔ Activa estas selecciones.
+</div>
+</div>'''
+                    html_clean = "\n".join([line.lstrip() for line in html_card.splitlines() if line.strip()])
+                    st.markdown(html_clean, unsafe_allow_html=True)
 
-                    if st.button(f"💾 Guardar {card['badge']} en SQLite", key=f"save_sgp_card_{selected_match_idx}_{idx_card}", use_container_width=True):
+                    if st.button(f"💾 Guardar {card['badge']} en SQLite" , key=f"save_sgp_card_{selected_match_idx}_{idx_card}", use_container_width=True):
                         legs_summary = " + ".join([f"{l['selection']} (@{l['odds']:.2f})" for l in card['legs']])
                         new_id = add_bet(
                             sport="Combinada / BetPlay SGP",
@@ -1027,10 +1020,9 @@ with tab_betplay:
                         st.metric("Ventaja (+EV)", f"{item_data['ev_pct']:+.2f}%")
                     with col_i4:
                         if item_data["has_value"]:
-                            st.markdown(
+                            render_clean_html(
                                 f"<span style='background:#059669; color:white; padding:4px 8px; border-radius:6px; font-weight:700; font-size:0.82em;'>🟢 ENTRAR</span> "
-                                f"<span style='color:#34d399; font-weight:700; font-size:0.85em;'>Stake: {format_money(item_data['rec_stake'], selected_curr_code)}</span>",
-                                unsafe_allow_html=True,
+                                f"<span style='color:#34d399; font-weight:700; font-size:0.85em;'>Stake: {format_money(item_data['rec_stake'], selected_curr_code)}</span>"
                             )
                             if st.button("💾 Guardar", key=f"btn_sec_save_{key_suffix}", use_container_width=True):
                                 m_id = add_bet(
@@ -1051,10 +1043,9 @@ with tab_betplay:
                                 st.toast(f"✅ ¡Apuesta #{m_id} registrada!", icon="💾")
                                 st.success(f"¡Guardada en SQLite (ID #{m_id})!")
                         else:
-                            st.markdown(
+                            render_clean_html(
                                 "<span style='background:#475569; color:#cbd5e1; padding:4px 8px; border-radius:6px; font-weight:600; font-size:0.82em;'>⚪ PASAR</span> "
-                                "<span style='color:#94a3b8; font-size:0.80em;'>Margen Casa</span>",
-                                unsafe_allow_html=True,
+                                "<span style='color:#94a3b8; font-size:0.80em;'>Margen Casa</span>"
                             )
 
             # BLOQUE 1: Resultado Final (1X2) y Doble Oportunidad
@@ -1150,15 +1141,12 @@ with tab_scanner:
         with c_view2:
             val_count = len(detected_opportunities)
             tot_count = len(events)
-            st.markdown(
-                f"<div style='text-align: right; padding-top: 6px;'>"
+            render_clean_html(f"<div style='text-align: right; padding-top: 6px;'>"
                 f"<span style='background-color: #059669; color: white; padding: 4px 10px; border-radius: 12px; font-weight: 700; font-size: 0.85em;'>"
                 f"🟢 {val_count} con Valor</span> "
                 f"<span style='background-color: #475569; color: white; padding: 4px 10px; border-radius: 12px; font-weight: 600; font-size: 0.85em;'>"
                 f"⚪ {tot_count - val_count} Sin Ventaja</span>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+                f"</div>")
 
         if "Cartelera Completa" in view_mode:
             st.markdown("##### 📋 Cartelera Completa de la Fecha & Diagnóstico:")
@@ -1215,8 +1203,7 @@ with tab_scanner:
                     # Explicación clara y didáctica: ¿A qué apostar y cómo funciona?
                     if "Over 2.0" in market_type:
                         profit_val = round(opp['recommended_stake'] * (opp['odds'] - 1), 2)
-                        st.markdown(
-                            f"""
+                        render_clean_html(f"""
                             <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1.5px solid #f59e0b; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;">
                                 <div style="font-weight: 700; color: #fbbf24; font-size: 1.05rem; margin-bottom: 6px;">
                                     ⚽ ¿A QUÉ ESTÁS APOSTANDO EXACTAMENTE? ➔ <u>TOTAL DE GOLES DE AMBOS EQUIPOS</u>
@@ -1231,13 +1218,10 @@ with tab_scanner:
                                     📅 Programación: {local_time_full}
                                 </div>
                             </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
+                            """)
                     elif "Draw No Bet" in market_type:
                         home_name = match_str.split(" vs ")[0] if " vs " in match_str else "Local"
-                        st.markdown(
-                            f"""
+                        render_clean_html(f"""
                             <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1.5px solid #6366f1; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;">
                                 <div style="font-weight: 700; color: #818cf8; font-size: 1.05rem; margin-bottom: 6px;">
                                     🛡️ ¿A QUÉ ESTÁS APOSTANDO EXACTAMENTE? ➔ <u>VICTORIA DE {home_name.upper()} (EMPATE REEMBOLSA)</u>
@@ -1252,12 +1236,9 @@ with tab_scanner:
                                     📅 Programación: {local_time_full}
                                 </div>
                             </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
+                            """)
                     else:
-                        st.markdown(
-                            f"""
+                        render_clean_html(f"""
                             <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1.5px solid #3b82f6; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;">
                                 <div style="font-weight: 700; color: #60a5fa; font-size: 1.05rem; margin-bottom: 6px;">
                                     🎯 SELECCIÓN RECOMENDADA: <u>{opp.get('selection', '')}</u>
@@ -1267,9 +1248,7 @@ with tab_scanner:
                                     📅 <b>Programación Oficial:</b> {local_time_full}
                                 </div>
                             </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
+                            """)
 
                     col_info1, col_info2, col_info3 = st.columns([1.5, 1.5, 1])
 
@@ -1298,7 +1277,7 @@ with tab_scanner:
                     factor_loc = float(safe_ai_get(ai_res, "factor_ajuste_local", 1.0))
                     factor_vis = float(safe_ai_get(ai_res, "factor_ajuste_visita", 1.0))
                     justificacion_txt = str(safe_ai_get(ai_res, "justificacion_tactica", "Análisis estadístico base sin alteraciones tácticas."))
-                    st.markdown(
+                    render_clean_html(
                         f"""
                         <div style="background-color: #1e293b; border-radius: 8px; padding: 12px; margin: 10px 0; border-left: 4px solid #8b5cf6;">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
@@ -1315,9 +1294,7 @@ with tab_scanner:
                                 "{justificacion_txt}"
                             </div>
                         </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                        """)
 
                     # Interactive Breaking News Injection
                     st.markdown("##### ⚡ Novedad de Última Hora & Recálculo en Vivo:")
@@ -1546,18 +1523,10 @@ with tab_audit:
                 col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns([2.5, 1.5, 1.2, 1.5, 0.8])
 
                 with col_b1:
-                    st.markdown(
-                        f"**#{bet_id} | {row['match']}** ({row['market']})\n\n"
-                        f"<small>📅 {row['timestamp']} | 🏢 {row['bookmaker']} | 🏷️ {row['selection']}</small>",
-                        unsafe_allow_html=True,
-                    )
+                    render_clean_html(f"**#{bet_id} | {row['match']}** ({row['market']})\n\n<small>📅 {row['timestamp']} | 🏢 {row['bookmaker']} | 🏷️ {row['selection']}</small>")
 
                 with col_b2:
-                    st.markdown(
-                        f"Cuota: **{row['odds']:.2f}** | Stake: **${row['stake']:.2f}**\n\n"
-                        f"<small>EV: +{row['ev_percent']:.2f}%</small>",
-                        unsafe_allow_html=True,
-                    )
+                    render_clean_html(f"Cuota: **{row['odds']:.2f}** | Stake: **${row['stake']:.2f}**\n\n<small>EV: +{row['ev_percent']:.2f}%</small>")
 
                 with col_b3:
                     status_options = ["Pendiente", "Ganada", "Perdida", "Reembolso / Push"]
@@ -1577,12 +1546,7 @@ with tab_audit:
                 with col_b4:
                     profit = float(row["net_profit"])
                     color = "#10b981" if profit > 0 else ("#ef4444" if profit < 0 else "#94a3b8")
-                    st.markdown(
-                        f"<div style='color:{color}; font-weight:700; font-size:1.1em; padding-top:8px;'>"
-                        f"{profit:+,.2f} USD"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
+                    render_clean_html(f"<div style='color:{color}; font-weight:700; font-size:1.1em; padding-top:8px;'>{profit:+,.2f} USD</div>")
 
                 with col_b5:
                     if st.button("🗑️", key=f"del_bet_{bet_id}", help="Eliminar apuesta"):
@@ -1902,7 +1866,7 @@ with tab_simulator:
                 match_entries = bets_df[bets_df["partido"] == chosen_match]
                 for _, r in match_entries.iterrows():
                     res_color = "#10b981" if r["resultado"] == "Ganada" else ("#f59e0b" if r["resultado"] == "Reembolso / Push" else "#ef4444")
-                    st.markdown(
+                    render_clean_html(
                         f"""
                         <div style="background-color: #1e293b; border-left: 5px solid {res_color}; border-radius: 8px; padding: 14px 18px; margin-bottom: 12px;">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
@@ -1918,9 +1882,7 @@ with tab_simulator:
                                 💰 Stake Invertido: {format_money(r['stake'], selected_curr_code)} ➔ Ganancia Neta Obtenida: {format_money(r['beneficio'], selected_curr_code)}
                             </div>
                         </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                        """)
 
             # Plotly Evolution Chart
             if not hist_df.empty:

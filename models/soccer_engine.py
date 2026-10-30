@@ -226,7 +226,7 @@ def analyze_soccer_match(
 
         # Synthetic DNB odds: Cuota_DNB = Cuota_1 * (1 - (1 / Cuota_X))
         synthetic_odds_dnb = odds_h * (1.0 - (1.0 / odds_x))
-        if synthetic_odds_dnb <= 1.0:
+        if synthetic_odds_dnb < 1.05:
             continue
 
         # Expected Value (EV): EV = (P_1 * (Cuota_DNB - 1)) - P_2
