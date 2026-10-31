@@ -219,7 +219,7 @@ render_clean_html("""
     /* === BASE MOBILE VIEWPORT === */
     @media (max-width: 768px) {
         .main .block-container {
-            padding: 0.5rem 0.7rem 2rem;
+            padding: 3.5rem 0.8rem 2rem !important;
         }
         .stTabs [data-baseweb="tab-list"] {
             gap: 1px;
@@ -779,11 +779,8 @@ tab_betplay, tab_scanner, tab_audit, tab_telegram, tab_simulator = st.tabs([
 with tab_betplay:
     try:
 
-        st.subheader("📱 Centro de Partido & Combinadas BetPlay")
-        st.caption(
-            "Experiencia unificada estilo app móvil BetPlay: Tarjetas de 'Combinadas para ti' (Same-Game Parlay de baja varianza) "
-            "y sábana integral de mercados de seguridad calculados a partir de la matriz Poisson 9x9."
-        )
+        st.subheader("📱 Centro de Partido BetPlay")
+        st.caption("Tarjetas Same-Game Parlay y mercados de seguridad calculados con Poisson 9x9.")
 
         if not events:
             st.info("ℹ️ No hay partidos cargados para esta competición. Selecciona un torneo arriba o activa el Modo Simulación en la barra lateral.")
@@ -829,11 +826,22 @@ with tab_betplay:
                         if m.get("key") == "h2h":
                             for o in m.get("outcomes", []):
                                 if o.get("name") == cur_home:
-                                    retail_odds_map["1"] = o.get("price", 0.0)
+                                    retail_odds_map["1"] = float(o.get("price", 0.0))
                                 elif o.get("name") in ("Draw", "Empate", "X"):
-                                    retail_odds_map["X"] = o.get("price", 0.0)
+                                    retail_odds_map["X"] = float(o.get("price", 0.0))
                                 elif o.get("name") == cur_away:
-                                    retail_odds_map["2"] = o.get("price", 0.0)
+                                    retail_odds_map["2"] = float(o.get("price", 0.0))
+            if not retail_odds_map:
+                for bm in curr_event.get("bookmakers", []):
+                    for m in bm.get("markets", []):
+                        if m.get("key") == "h2h":
+                            for o in m.get("outcomes", []):
+                                if o.get("name") == cur_home:
+                                    retail_odds_map["1"] = float(o.get("price", 0.0))
+                                elif o.get("name") in ("Draw", "Empate", "X"):
+                                    retail_odds_map["X"] = float(o.get("price", 0.0))
+                                elif o.get("name") == cur_away:
+                                    retail_odds_map["2"] = float(o.get("price", 0.0))
 
             betplay_cat = calculate_betplay_security_catalog(
                 home_team=cur_home,
@@ -854,7 +862,7 @@ with tab_betplay:
 
             # Top Banner: Match Context & Expected Goals
             render_clean_html(f"""
-                <div style="background: linear-gradient(135deg, #0f192d 0%, #172554 100%); border: 1.5px solid #1e3a5f; border-radius: 12px; padding: 14px 18px; margin: 10px 0 16px 0;">
+                <div style="background: linear-gradient(135deg, #0f192d 0%, #172554 100%); border: 1.5px solid #1e3a5f; border-radius: 12px; padding: 10px 14px; margin: 6px 0 12px 0;">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <div>
                             <div style="font-size: 1.25rem; font-weight: 800; color: #ffffff; letter-spacing: 0.3px;">
@@ -915,8 +923,10 @@ with tab_betplay:
                     badge_bg = "#065f46" if "BLINDADA" in card["badge"] else ("#92400e" if "RITMO" in card["badge"] else "#5b21b6")
                     badge_fg = "#a7f3d0" if "BLINDADA" in card["badge"] else ("#fde68a" if "RITMO" in card["badge"] else "#ddd6fe")
                     border_color = "#10b981" if "BLINDADA" in card["badge"] else ("#f59e0b" if "RITMO" in card["badge"] else "#8b5cf6")
-                    card_ev_str = f"+{card['ev_pct']}%" if card["ev_pct"] >= 0 else f"{card['ev_pct']}%"
-                    card_ev_color = "#10b981" if card["ev_pct"] >= 0 else "#94a3b8"
+                    is_neg_ev = float(card["ev_pct"]) <= 0.0
+                    card_ev_str = f"+{card['ev_pct']}%" if card["ev_pct"] > 0 else f"{card['ev_pct']}%"
+                    card_ev_color = "#10b981" if card["ev_pct"] > 0 else "#ef4444"
+                    neg_ev_banner = '<div style="background: rgba(239, 68, 68, 0.18); border: 1.5px solid #ef4444; border-radius: 8px; padding: 7px 10px; margin: 8px 0; text-align: center; color: #fca5a5; font-weight: 800; font-size: 0.82rem;">⛔ NO APOSTAR (EV Negativo - Sin Valor Matemático)</div>' if is_neg_ev else ""
 
                     # Build connected timeline HTML
                     legs_html = ""
@@ -959,9 +969,10 @@ with tab_betplay:
 <span style="color: #94a3b8; font-size: 0.82rem;">Valor Esperado EV:</span>
 <span style="color: {card_ev_color}; font-weight: 700; font-size: 0.90rem;">{card_ev_str}</span>
 </div>
+{neg_ev_banner}
 <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #1e3a5f; padding-top: 8px; margin-top: 6px;">
 <span style="color: #f1f5f9; font-weight: 700; font-size: 0.86rem;">Stake Sugerido (Kelly):</span>
-<span style="color: #34d399; font-weight: 800; font-size: 1.02rem;">{format_money(card['recommended_stake'], selected_curr_code)}</span>
+<span style="color: {'#ef4444' if is_neg_ev else '#34d399'}; font-weight: 800; font-size: 1.02rem;">{format_money(0.0 if is_neg_ev else card['recommended_stake'], selected_curr_code)}</span>
 </div>
 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 3px;">
 <span style="color: #94a3b8; font-size: 0.80rem;">Ganancia Neta Potencial:</span>

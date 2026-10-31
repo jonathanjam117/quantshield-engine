@@ -106,6 +106,23 @@ def resolve_event_lambdas(
         oracle_probs=oracle_probs,
     )
 
+    # Enforce market reality: if market odds clearly favor away or home, lambdas MUST match
+    if oracle_data:
+        p_clean_h = float(oracle_data["p_clean_h"])
+        p_clean_a = float(oracle_data["p_clean_a"])
+        tot_lam = (lh + la) if (lh + la) > 0 else 2.60
+        # If Away is favorite by market odds (p_clean_a > p_clean_h), away lambda must be higher
+        if p_clean_a > p_clean_h and lh >= la:
+            ratio = (p_clean_h / p_clean_a) ** 0.65
+            lh = tot_lam * (ratio / (1.0 + ratio))
+            la = tot_lam * (1.0 / (1.0 + ratio))
+            src += " [Calibrado a Favorito Mercado Visita]"
+        elif p_clean_h > p_clean_a and la >= lh:
+            ratio = (p_clean_h / p_clean_a) ** 0.65
+            lh = tot_lam * (ratio / (1.0 + ratio))
+            la = tot_lam * (1.0 / (1.0 + ratio))
+            src += " [Calibrado a Favorito Mercado Local]"
+
     if ai_adjustment is not None:
         f_h = float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0))
         f_a = float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0))

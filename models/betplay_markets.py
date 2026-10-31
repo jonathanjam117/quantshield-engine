@@ -60,7 +60,43 @@ def calculate_betplay_security_catalog(
     EV diagnostic and recommended stakes.
     """
     mat = build_bivariate_poisson(lambda_h, lambda_a, max_goals=9)
-    retail = retail_odds or {}
+    retail = dict(retail_odds) if retail_odds else {}
+
+    # Derive real synthetic retail odds for Double Chance & DNB directly from 1X2 market
+    o1_val = float(retail.get("1", 0.0))
+    ox_val = float(retail.get("X", 0.0))
+    o2_val = float(retail.get("2", 0.0))
+
+    if o1_val > 1.0 and ox_val > 1.0:
+        inv_1x = (1.0 / o1_val) + (1.0 / ox_val)
+        if inv_1x > 0:
+            synth_1x = round(max(1.08, 1.0 / inv_1x), 2)
+            if "1X" not in retail:
+                retail["1X"] = synth_1x
+
+    if o2_val > 1.0 and ox_val > 1.0:
+        inv_x2 = (1.0 / o2_val) + (1.0 / ox_val)
+        if inv_x2 > 0:
+            synth_x2 = round(max(1.08, 1.0 / inv_x2), 2)
+            if "X2" not in retail:
+                retail["X2"] = synth_x2
+
+    if o1_val > 1.0 and o2_val > 1.0:
+        inv_12 = (1.0 / o1_val) + (1.0 / o2_val)
+        if inv_12 > 0:
+            synth_12 = round(max(1.08, 1.0 / inv_12), 2)
+            if "12" not in retail:
+                retail["12"] = synth_12
+
+    if o1_val > 1.0 and ox_val > 1.0:
+        synth_dnb_h = round(max(1.08, o1_val * (1.0 - (1.0 / ox_val))), 2)
+        if "DNB_H" not in retail:
+            retail["DNB_H"] = synth_dnb_h
+
+    if o2_val > 1.0 and ox_val > 1.0:
+        synth_dnb_a = round(max(1.08, o2_val * (1.0 - (1.0 / ox_val))), 2)
+        if "DNB_A" not in retail:
+            retail["DNB_A"] = synth_dnb_a
 
     # 1. 1X2 Probabilities
     p_h = float(np.sum(np.tril(mat, -1)))  # i > j
@@ -260,7 +296,23 @@ def generate_betplay_same_game_parlays(
     away = catalog["away_team"]
     lam_h = catalog["lambdas"]["home"]
     lam_a = catalog["lambdas"]["away"]
-    fav_is_home = lam_h >= lam_a
+
+    # True favorite determination:
+    # 1. Contrast real 1X2 retail odds (lower odds = favorite)
+    # 2. Contrast Poisson probabilities p_h vs p_a
+    # 3. Fallback to expected goals (lambdas)
+    o_h = float(catalog.get("block_1x2", {}).get("home", {}).get("retail_odds", 0.0))
+    o_a = float(catalog.get("block_1x2", {}).get("away", {}).get("retail_odds", 0.0))
+    p_h = float(catalog.get("block_1x2", {}).get("home", {}).get("prob_pct", 0.0))
+    p_a = float(catalog.get("block_1x2", {}).get("away", {}).get("prob_pct", 0.0))
+
+    if o_h > 1.0 and o_a > 1.0:
+        fav_is_home = (o_h <= o_a)
+    elif p_h > 0.0 and p_a > 0.0:
+        fav_is_home = (p_h >= p_a)
+    else:
+        fav_is_home = (lam_h >= lam_a)
+
     fav_team = home if fav_is_home else away
     dog_team = away if fav_is_home else home
 
@@ -321,23 +373,34 @@ def generate_betplay_same_game_parlays(
         _build_safe_leg(mkt3, sel3_1h),
     ]
 
-    # Correlation boost: favor team winning correlates positively with scoring and 1H goal
-    rho_1 = 1.14
-    raw_prob_t1 = legs_t1[0]["prob"] * legs_t1[1]["prob"] * legs_t1[2]["prob"]
-    p_comb_t1 = min(0.82, max(0.40, raw_prob_t1 * rho_1))
+    # Exact positive correlation formula:
+    # Event 1 (Double Chance) and Event 2 (Favorite Over 0.5) have rho > 0.75
+    # P_conjunta_1_y_2 = min(P_doble_oportunidad, P_gol_favorito) * 0.92
+    # P_combinada_total = P_conjunta_1_y_2 * P_tercera_linea * 1.05
+    p_dc = float(legs_t1[0]["prob"])
+    p_fg = float(legs_t1[1]["prob"])
+    p_3rd = float(legs_t1[2]["prob"])
+
+    p_conj_1_2 = min(p_dc, p_fg) * 0.92
+    p_comb_t1 = min(0.88, max(0.35, p_conj_1_2 * p_3rd * 1.05))
+
     raw_odds_t1 = legs_t1[0]["odds"] * legs_t1[1]["odds"] * legs_t1[2]["odds"]
-    odds_comb_t1 = round(raw_odds_t1 * 0.94, 2)  # Realistic SGP pricing
-    odds_comb_t1 = round(max(1.50, odds_comb_t1), 2)
+    odds_comb_t1 = round(max(1.50, raw_odds_t1 * 0.88), 2)  # BetPlay SGP pricing
     ev_t1 = (p_comb_t1 * odds_comb_t1) - 1.0
     ev_pct_t1 = round(ev_t1 * 100.0, 2)
 
-    # Kelly stake
+    # Strict EV gating: If EV <= 0, recommended stake MUST be strictly 0.0
     b1 = odds_comb_t1 - 1.0
     q1 = 1.0 - p_comb_t1
-    f_star1 = (p_comb_t1 * b1 - q1) / b1 if b1 > 0 else 0.0
-    stake_pct_t1 = min(0.015, max(0.005, f_star1 * kelly_multiplier * 0.50))
-    stake_t1 = round(bankroll * stake_pct_t1, -2) if bankroll >= 10000 else round(bankroll * stake_pct_t1, 1)
-    profit_t1 = round(stake_t1 * b1, 2)
+    if ev_pct_t1 > 0.0 and b1 > 0:
+        f_star1 = (p_comb_t1 * b1 - q1) / b1
+        stake_pct_t1 = min(0.025, max(0.005, f_star1 * kelly_multiplier * 0.50))
+        stake_t1 = round(bankroll * stake_pct_t1, -2 if bankroll >= 10000 else 1)
+        profit_t1 = round(stake_t1 * b1, 2)
+    else:
+        stake_pct_t1 = 0.0
+        stake_t1 = 0.0
+        profit_t1 = 0.0
 
     cards.append({
         "id": "parlay_shield",
@@ -358,8 +421,8 @@ def generate_betplay_same_game_parlays(
     # --------------------------------------------------------------------------
     # TARJETA 2: ⚽ Combinada de Ritmo Ofensivo (Riesgo Medio - Cuota 2.10 - 2.85)
     # --------------------------------------------------------------------------
-    sel1_t2 = catalog["block_team_goals_home"]["over_05"]
-    mkt1_t2 = f"Goles {home}"
+    sel1_t2 = catalog["block_team_goals_home"]["over_05"] if fav_is_home else catalog["block_team_goals_away"]["over_05"]
+    mkt1_t2 = f"Goles {fav_team}"
     if sel1_t2["retail_odds"] < 1.12:
         cand_h15 = catalog["block_team_goals_home"]["over_15"]
         if cand_h15["retail_odds"] >= 1.12:
@@ -408,10 +471,15 @@ def generate_betplay_same_game_parlays(
 
     b2 = odds_comb_t2 - 1.0
     q2 = 1.0 - p_comb_t2
-    f_star2 = (p_comb_t2 * b2 - q2) / b2 if b2 > 0 else 0.0
-    stake_pct_t2 = min(0.012, max(0.004, f_star2 * kelly_multiplier * 0.45))
-    stake_t2 = round(bankroll * stake_pct_t2, -2) if bankroll >= 10000 else round(bankroll * stake_pct_t2, 1)
-    profit_t2 = round(stake_t2 * b2, 2)
+    if ev_pct_t2 > 0.0 and b2 > 0:
+        f_star2 = (p_comb_t2 * b2 - q2) / b2
+        stake_pct_t2 = min(0.020, max(0.004, f_star2 * kelly_multiplier * 0.45))
+        stake_t2 = round(bankroll * stake_pct_t2, -2 if bankroll >= 10000 else 1)
+        profit_t2 = round(stake_t2 * b2, 2)
+    else:
+        stake_pct_t2 = 0.0
+        stake_t2 = 0.0
+        profit_t2 = 0.0
 
     cards.append({
         "id": "parlay_offensive",
@@ -476,10 +544,15 @@ def generate_betplay_same_game_parlays(
 
     b3 = odds_comb_t3 - 1.0
     q3 = 1.0 - p_comb_t3
-    f_star3 = (p_comb_t3 * b3 - q3) / b3 if b3 > 0 else 0.0
-    stake_pct_t3 = min(0.010, max(0.003, f_star3 * kelly_multiplier * 0.35))
-    stake_t3 = round(bankroll * stake_pct_t3, -2) if bankroll >= 10000 else round(bankroll * stake_pct_t3, 1)
-    profit_t3 = round(stake_t3 * b3, 2)
+    if ev_pct_t3 > 0.0 and b3 > 0:
+        f_star3 = (p_comb_t3 * b3 - q3) / b3
+        stake_pct_t3 = min(0.015, max(0.003, f_star3 * kelly_multiplier * 0.35))
+        stake_t3 = round(bankroll * stake_pct_t3, -2 if bankroll >= 10000 else 1)
+        profit_t3 = round(stake_t3 * b3, 2)
+    else:
+        stake_pct_t3 = 0.0
+        stake_t3 = 0.0
+        profit_t3 = 0.0
 
     cards.append({
         "id": "parlay_value_ai",
