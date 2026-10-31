@@ -111,8 +111,25 @@ def fetch_odds(
         mock_data = get_simulation_events(sport_key)
         return mock_data, metadata, None
 
-    # If demo is disabled but no API key was provided, alert the user
-    if not api_key or api_key.strip() == "":
+    # If demo is disabled but no API key was provided, try auto-reading st.secrets and os.getenv
+    if not api_key or not api_key.strip():
+        try:
+            import streamlit as st
+            if hasattr(st, "secrets"):
+                if "THE_ODDS_API_KEY" in st.secrets and st.secrets["THE_ODDS_API_KEY"]:
+                    api_key = str(st.secrets["THE_ODDS_API_KEY"]).strip()
+                else:
+                    for section in st.secrets:
+                        sec_obj = st.secrets[section]
+                        if isinstance(sec_obj, dict) and "THE_ODDS_API_KEY" in sec_obj and sec_obj["THE_ODDS_API_KEY"]:
+                            api_key = str(sec_obj["THE_ODDS_API_KEY"]).strip()
+                            break
+        except Exception:
+            pass
+        if not api_key:
+            api_key = os.getenv("THE_ODDS_API_KEY", "").strip()
+
+    if not api_key or api_key.strip() == "" or api_key.strip() == "your_the_odds_api_key_here":
         metadata["requests_remaining"] = "0"
         metadata["requests_used"] = "0"
         metadata["source"] = "api"
@@ -404,6 +421,58 @@ def get_simulation_events(sport_key: str) -> List[Dict[str, Any]]:
 
     elif sport_key == "soccer_netherlands_eredivisie":
         return [
+            {
+                "id": "ned_match_cambuur_eagles",
+                "sport_key": "soccer_netherlands_eredivisie",
+                "sport_title": "Dutch Eredivisie / KNVB Beker",
+                "commence_time": d1,
+                "home_team": "SC Cambuur",
+                "away_team": "Go Ahead Eagles",
+                "bookmakers": [
+                    {
+                        "key": "pinnacle",
+                        "title": "Pinnacle",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "SC Cambuur", "price": 2.55},
+                                    {"name": "Draw", "price": 3.70},
+                                    {"name": "Go Ahead Eagles", "price": 2.43},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "point": 3.5, "price": 2.12},
+                                    {"name": "Under", "point": 3.5, "price": 1.72},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "key": "bet365",
+                        "title": "BetPlay",
+                        "markets": [
+                            {
+                                "key": "h2h",
+                                "outcomes": [
+                                    {"name": "SC Cambuur", "price": 2.55},
+                                    {"name": "Draw", "price": 3.70},
+                                    {"name": "Go Ahead Eagles", "price": 2.43},
+                                ],
+                            },
+                            {
+                                "key": "totals",
+                                "outcomes": [
+                                    {"name": "Over", "point": 3.5, "price": 2.12},
+                                    {"name": "Under", "point": 3.5, "price": 1.72},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
             {
                 "id": "ned_match_1",
                 "sport_key": "soccer_netherlands_eredivisie",

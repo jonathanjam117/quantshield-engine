@@ -27,18 +27,25 @@ import streamlit as st
 
 def _get_secret(key: str, default: str = "") -> str:
     """Reads a secret from st.secrets (Streamlit Cloud) with fallback to os.getenv (local .env).
-
+    Supports top-level keys and nested sections [general], [api_keys], etc.
     Priority: st.secrets → os.getenv → default
-    This dual-source pattern makes the app compatible with both local development
-    and Streamlit Community Cloud without code changes.
     """
     try:
-        val = st.secrets.get(key, None)
-        if val is not None:
-            return str(val)
+        if hasattr(st, "secrets"):
+            if key in st.secrets:
+                val = st.secrets[key]
+                if val is not None and str(val).strip():
+                    return str(val).strip()
+            for section in st.secrets:
+                sec_obj = st.secrets[section]
+                if isinstance(sec_obj, dict) and key in sec_obj:
+                    val = sec_obj[key]
+                    if val is not None and str(val).strip():
+                        return str(val).strip()
     except Exception:
         pass
-    return os.getenv(key, default)
+    val = os.getenv(key, default)
+    return str(val).strip() if val else default
 
 
 def _sanitize(text: str) -> str:
@@ -423,22 +430,22 @@ env_tg_chat_id = _get_secret("TELEGRAM_CHAT_ID")
 st.sidebar.markdown("### 🔑 Credenciales & Fuente de Datos")
 has_env_key = bool(env_api_key and env_api_key.strip() != "your_the_odds_api_key_here")
 
-# Simulation mode toggle: ON by default if no valid API key
+# Simulation mode toggle: APAGADO por defecto si THE_ODDS_API_KEY existe
 demo_mode_toggle = st.sidebar.toggle(
     "🧪 Modo Simulación (Sin gastar API)",
-    value=True if not has_env_key else False,
-    help="Usa datos realistas de prueba para probar todos los algoritmos sin consumir tu cuota mensual de The Odds API.",
+    value=False if has_env_key else True,
+    help="Si cuentas con API Key configurada, consulta las cuotas reales en vivo por defecto. Activa este interruptor para modo prueba/laboratorio.",
 )
 
 api_key_input = st.sidebar.text_input(
     "The Odds API Key",
-    value=env_api_key if not demo_mode_toggle else "",
+    value=env_api_key if env_api_key != "your_the_odds_api_key_here" else "",
     type="password",
     help="Obtén tu clave gratuita de 500 llamadas/mes en the-odds-api.com",
     disabled=demo_mode_toggle,
 )
 
-active_api_key = api_key_input.strip() if not demo_mode_toggle else ""
+active_api_key = (api_key_input.strip() or env_api_key.strip()) if not demo_mode_toggle else ""
 
 # 2. Motor de IA (Gemini Pro)
 st.sidebar.markdown("### 🧠 Motor de IA (Gemini Pro)")
@@ -813,35 +820,82 @@ with tab_betplay:
                     "<span style='background-color: #1e3a5f; color: #38bdf8; padding: 6px 12px; border-radius: 8px; font-weight: 700; font-size: 0.88em;'>"
                     "⚡ BetPlay Verified</span></div>")
 
-            # Expected Goals & Poisson resolution (Dynamically resolved per team/event)
-            adv_props = curr_event.get("advanced_poisson_props", {})
-            lam_h, lam_a, _ = resolve_event_lambdas(curr_event, selected_meta, ai_adjustment=ai_adj)
-            ai_adj = st.session_state.match_ai_adjustments.get(cur_match_name)
+            # Extract base odds from event bookmakers
+            match_slug = "".join([c if c.isalnum() else "_" for c in cur_match_name])
+            k_o1 = f"sync_o1_{match_slug}"
+            k_ox = f"sync_ox_{match_slug}"
+            k_o2 = f"sync_o2_{match_slug}"
+            k_line = f"sync_line_{match_slug}"
+            k_godds = f"sync_godds_{match_slug}"
 
-            # Extract Colombian retail odds from event bookmakers
-            retail_odds_map = {}
+            cur_o1 = 2.50
+            cur_ox = 3.40
+            cur_o2 = 2.50
+            cur_goal_line = 2.5
+            cur_goal_odds = 1.85
+
             for bm in curr_event.get("bookmakers", []):
-                if bm.get("key", "").lower() != "pinnacle":
-                    for m in bm.get("markets", []):
-                        if m.get("key") == "h2h":
-                            for o in m.get("outcomes", []):
-                                if o.get("name") == cur_home:
-                                    retail_odds_map["1"] = float(o.get("price", 0.0))
-                                elif o.get("name") in ("Draw", "Empate", "X"):
-                                    retail_odds_map["X"] = float(o.get("price", 0.0))
-                                elif o.get("name") == cur_away:
-                                    retail_odds_map["2"] = float(o.get("price", 0.0))
-            if not retail_odds_map:
-                for bm in curr_event.get("bookmakers", []):
-                    for m in bm.get("markets", []):
-                        if m.get("key") == "h2h":
-                            for o in m.get("outcomes", []):
-                                if o.get("name") == cur_home:
-                                    retail_odds_map["1"] = float(o.get("price", 0.0))
-                                elif o.get("name") in ("Draw", "Empate", "X"):
-                                    retail_odds_map["X"] = float(o.get("price", 0.0))
-                                elif o.get("name") == cur_away:
-                                    retail_odds_map["2"] = float(o.get("price", 0.0))
+                for m in bm.get("markets", []):
+                    if m.get("key") == "h2h":
+                        for o in m.get("outcomes", []):
+                            if o.get("name") == cur_home:
+                                cur_o1 = float(o.get("price", cur_o1))
+                            elif o.get("name") in ("Draw", "Empate", "X"):
+                                cur_ox = float(o.get("price", cur_ox))
+                            elif o.get("name") == cur_away:
+                                cur_o2 = float(o.get("price", cur_o2))
+                    elif m.get("key") == "totals":
+                        for o in m.get("outcomes", []):
+                            if str(o.get("name", "")).lower() in ("over", "más de", "mas de"):
+                                pt = float(o.get("point", 2.5))
+                                if pt in [1.5, 2.5, 3.5]:
+                                    cur_goal_line = pt
+                                cur_goal_odds = float(o.get("price", cur_goal_odds))
+
+            # Retrieve active odds (pre-filled with event data or updated in real-time by user)
+            active_o1 = float(st.session_state.get(k_o1, cur_o1))
+            active_ox = float(st.session_state.get(k_ox, cur_ox))
+            active_o2 = float(st.session_state.get(k_o2, cur_o2))
+            active_line = float(st.session_state.get(k_line, cur_goal_line))
+            active_godds = float(st.session_state.get(k_godds, cur_goal_odds))
+
+            has_user_override = any(k in st.session_state for k in [k_o1, k_ox, k_o2, k_line, k_godds])
+            is_using_demo = bool(demo_mode_toggle or meta.get("source") == "demo")
+            is_synced_real = (not is_using_demo) or has_user_override
+
+            # Indicator Banner above match
+            if is_synced_real:
+                st.success("✅ CUOTAS REALES BETPLAY SINCRONIZADAS" + (" (Override Manual en Vivo)" if has_user_override else ""))
+            else:
+                st.warning("⚠️ MODO SIMULACIÓN ACTIVO (Cuotas de prueba - Activa API o ingresa cuotas reales de BetPlay)")
+
+            custom_odds_sync = {
+                "1": active_o1,
+                "X": active_ox,
+                "2": active_o2,
+                "goal_line": active_line,
+                "goal_odds": active_godds,
+            }
+
+            ai_adj = st.session_state.match_ai_adjustments.get(cur_match_name)
+            lam_h, lam_a, lam_src = resolve_event_lambdas(
+                curr_event,
+                selected_meta,
+                ai_adjustment=ai_adj,
+                custom_odds=custom_odds_sync,
+            )
+
+            retail_odds_map = {
+                "1": active_o1,
+                "X": active_ox,
+                "2": active_o2,
+            }
+            if active_line == 1.5:
+                retail_odds_map["O15"] = active_godds
+            elif active_line == 2.5:
+                retail_odds_map["O25"] = active_godds
+            elif active_line == 3.5:
+                retail_odds_map["O35"] = active_godds
 
             betplay_cat = calculate_betplay_security_catalog(
                 home_team=cur_home,
@@ -905,6 +959,73 @@ with tab_betplay:
                     </div>
                 </div>
                 """)
+
+            # ----------------------------------------------------------------------
+            # 🎛️ SINCRONIZADOR EXACTO BETPLAY (OVERRIDE EN VIVO)
+            # ----------------------------------------------------------------------
+            with st.expander("🎛️ Ajustar con Cuotas Exactas de mi BetPlay (Tiempo Real)", expanded=True):
+                st.caption(
+                    "📱 Edita las cuotas directamente con los números que ves en tu app de BetPlay. "
+                    "Al modificarlas, el motor recalcula instantáneamente el xG total por Poisson y las combinadas para este encuentro:"
+                )
+                c_ov1, c_ov2, c_ov3 = st.columns(3)
+                with c_ov1:
+                    st.number_input(
+                        f"Cuota {cur_home} (1)",
+                        min_value=1.01,
+                        max_value=50.0,
+                        value=float(cur_o1),
+                        step=0.01,
+                        format="%.2f",
+                        key=k_o1,
+                        help=f"Cuota para Victoria de {cur_home} en BetPlay",
+                    )
+                with c_ov2:
+                    st.number_input(
+                        "Cuota Empate (X)",
+                        min_value=1.01,
+                        max_value=50.0,
+                        value=float(cur_ox),
+                        step=0.01,
+                        format="%.2f",
+                        key=k_ox,
+                        help="Cuota para el Empate en BetPlay",
+                    )
+                with c_ov3:
+                    st.number_input(
+                        f"Cuota {cur_away} (2)",
+                        min_value=1.01,
+                        max_value=50.0,
+                        value=float(cur_o2),
+                        step=0.01,
+                        format="%.2f",
+                        key=k_o2,
+                        help=f"Cuota para Victoria de {cur_away} en BetPlay",
+                    )
+
+                c_gl1, c_gl2 = st.columns(2)
+                with c_gl1:
+                    line_opts = [1.5, 2.5, 3.5]
+                    def_l_idx = line_opts.index(cur_goal_line) if cur_goal_line in line_opts else 1
+                    st.selectbox(
+                        "Línea de Goles en BetPlay",
+                        options=line_opts,
+                        index=def_l_idx,
+                        key=k_line,
+                        help="Línea de Total de Goles visible en BetPlay (ej. 1.5, 2.5 o 3.5)",
+                    )
+                with c_gl2:
+                    curr_sel_line = st.session_state.get(k_line, cur_goal_line)
+                    st.number_input(
+                        f"Cuota 'Más de {curr_sel_line}'",
+                        min_value=1.01,
+                        max_value=20.0,
+                        value=float(cur_goal_odds),
+                        step=0.01,
+                        format="%.2f",
+                        key=k_godds,
+                        help=f"Cuota de Más de {curr_sel_line} goles en BetPlay (ej. 2.12)",
+                    )
 
             # ----------------------------------------------------------------------
             # SECCIÓN 1: CARDS "COMBINADAS PARA TI" (BETPLAY STYLE CONNECTED DOTS)

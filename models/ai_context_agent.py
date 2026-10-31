@@ -151,6 +151,15 @@ def generar_ajuste_simulado(
     or when no GEMINI_API_KEY is supplied. Reacts intelligently to keywords in user context.
     """
     ctx = (contexto_usuario or "").lower().strip()
+
+    if not ctx:
+        return TacticalAdjustment(
+            factor_ajuste_local=1.00,
+            factor_ajuste_visita=1.00,
+            confianza_ia=0.80,
+            nivel_riesgo="Bajo",
+            justificacion_tactica="Análisis estadístico base neutro (sin sesgo localista ni novedades tácticas reportadas).",
+        )
     
     # Check for negative impact on visiting team
     if any(k in ctx for k in ["arquero", "portero", "lesion", "baja", "suplente", "fatiga", "sancion"]) and ("visita" in ctx or "santa fe" in ctx or "visitante" in ctx or "rival" in ctx):
@@ -200,11 +209,11 @@ def generar_ajuste_simulado(
         justificacion = f"Dinámica habitual de rotación en back-to-back de temporada regular. Ligera ventaja física para el conjunto local."
 
     else:
-        f_local = 1.03
-        f_visita = 0.98
+        f_local = 1.00
+        f_visita = 1.00
         confianza = 0.80
         riesgo = "Bajo"
-        justificacion = f"Análisis táctico estándar: localía consolidada y alineaciones completas reportadas sin incidencias."
+        justificacion = f"Análisis táctico estándar: factores neutros 1.00x sin sesgo artificial."
 
     return TacticalAdjustment(
         factor_ajuste_local=f_local,

@@ -12,6 +12,7 @@ Implements:
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
+import math
 import numpy as np
 from scipy.stats import poisson
 
@@ -68,15 +69,86 @@ def extract_vig_free_h2h(bookmaker_dict: Dict[str, Any]) -> Optional[Dict[str, f
     return None
 
 
+def solve_lambda_from_over(line: float, odds_over: float, margin: float = 1.075) -> float:
+    """Derives the implicit Poisson expected goals (lambda_tot) from an Over/Under goal line and retail odds.
+    E.g. Over 3.5 @ 2.12 with retail margin yields lambda_tot ~ 3.35 - 3.40.
+    """
+    try:
+        line_val = float(line)
+        odds_val = float(odds_over)
+        if odds_val <= 1.01:
+            odds_val = 1.02
+        p_fair = max(0.04, min(0.96, (1.0 / odds_val) / margin))
+        floor_l = int(math.floor(line_val))
+
+        low, high = 0.4, 7.5
+        for _ in range(35):
+            mid = (low + high) / 2.0
+            term = math.exp(-mid)
+            cdf = term
+            for k in range(1, floor_l + 1):
+                term *= (mid / k)
+                cdf += term
+            p_gt = 1.0 - cdf
+            if p_gt < p_fair:
+                low = mid
+            else:
+                high = mid
+        return round((low + high) / 2.0, 2)
+    except Exception:
+        return 2.70
+
+
 def resolve_event_lambdas(
     event: Dict[str, Any],
     sport_meta: Optional[Dict[str, Any]] = None,
     ai_adjustment: Optional[Any] = None,
+    custom_odds: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, float, str]:
     """Resolves and caches dynamic Poisson lambdas (lambda_h, lambda_a) for an event
     using Football-Data CSV, Oracle vig-free probabilities, or league averages,
-    adjusted by Gemini AI if provided.
+    adjusted by Gemini AI if provided, or calibrated via custom BetPlay odds override.
     """
+    if custom_odds:
+        o1 = float(custom_odds.get("1", 0.0))
+        ox = float(custom_odds.get("X", 0.0))
+        o2 = float(custom_odds.get("2", 0.0))
+        g_line = float(custom_odds.get("goal_line", 2.5))
+        g_odds = float(custom_odds.get("goal_odds", 1.85))
+
+        if g_odds > 1.01:
+            tot_lam = solve_lambda_from_over(g_line, g_odds)
+        else:
+            tot_lam = 2.70
+
+        if o1 > 1.0 and o2 > 1.0:
+            inv1 = 1.0 / o1
+            inv2 = 1.0 / o2
+            denom = inv1 + inv2
+            w1 = inv1 / denom if denom > 0 else 0.5
+            w2 = inv2 / denom if denom > 0 else 0.5
+        else:
+            w1, w2 = 0.5, 0.5
+
+        lh = tot_lam * w1
+        la = tot_lam * w2
+        src = f"⚡ BetPlay Sync (xG Tot: {tot_lam:.2f} | +{g_line} @{g_odds:.2f})"
+
+        if ai_adjustment is not None:
+            f_h = float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0))
+            f_a = float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0))
+            lh = float(np.clip(lh * f_h, 0.35, 4.50))
+            la = float(np.clip(la * f_a, 0.35, 4.50))
+            if f_h != 1.0 or f_a != 1.0:
+                src += f" + IA (H: {f_h:.2f}x | A: {f_a:.2f}x)"
+
+        lh = round(float(lh), 2)
+        la = round(float(la), 2)
+        event["lambda_h"] = lh
+        event["lambda_a"] = la
+        event["lambda_source"] = src
+        return lh, la, src
+
     if "lambda_h" in event and "lambda_a" in event:
         return float(event["lambda_h"]), float(event["lambda_a"]), str(event.get("lambda_source", "Cache"))
 
