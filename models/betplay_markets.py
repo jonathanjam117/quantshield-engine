@@ -283,17 +283,42 @@ def calculate_betplay_security_catalog(
 
 
 def generate_betplay_same_game_parlays(
-    catalog: Dict[str, Any],
+    catalog: Optional[Dict[str, Any]] = None,
     bankroll: float = 100000.0,
     kelly_multiplier: float = 0.20,
     ai_adjustment: Optional[Any] = None,
     mc_sim: Optional[Dict[str, Any]] = None,
     steam_data: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
 ) -> List[Dict[str, Any]]:
     """Builds the 3 'Combinadas para ti' (Same-Game Parlays) with low variance,
     powered by Monte Carlo simulation (10,000 iterations), Smart Money tracking,
     and Oracle Score (0 to 100).
     """
+    if catalog is None:
+        catalog = kwargs.get("catalog")
+    if mc_sim is None:
+        mc_sim = kwargs.get("mc_sim")
+    if steam_data is None:
+        steam_data = kwargs.get("steam_data")
+
+    if not catalog:
+        match_data = kwargs.get("match_data") or kwargs.get("event")
+        if match_data:
+            from models.soccer_engine import resolve_event_lambdas, extract_event_market_odds
+            lh, la, _ = resolve_event_lambdas(match_data)
+            catalog = calculate_betplay_security_catalog(
+                home_team=match_data.get("home_team", "Local"),
+                away_team=match_data.get("away_team", "Visitante"),
+                lambda_h=lh,
+                lambda_a=la,
+                bankroll=bankroll,
+                kelly_multiplier=kelly_multiplier,
+                retail_odds=extract_event_market_odds(match_data),
+            )
+        else:
+            return []
+
     home = catalog["home_team"]
     away = catalog["away_team"]
     lam_h = float(catalog["lambdas"]["home"])
@@ -401,7 +426,7 @@ def generate_betplay_same_game_parlays(
 
     b1 = odds_comb_t1 - 1.0
     q1 = 1.0 - p_comb_t1
-    if oracle_score_t1 > 75.0 and ev_pct_t1 > 0.0 and b1 > 0:
+    if oracle_score_t1 > 65.0 and ev_pct_t1 > 0.0 and b1 > 0:
         f_star1 = (p_comb_t1 * b1 - q1) / b1
         stake_pct_t1 = min(0.025, max(0.005, f_star1 * kelly_multiplier * 0.50))
         stake_t1 = round(bankroll * stake_pct_t1, -2 if bankroll >= 10000 else 1)
@@ -497,7 +522,7 @@ def generate_betplay_same_game_parlays(
 
     b2 = odds_comb_t2 - 1.0
     q2 = 1.0 - p_comb_t2
-    if oracle_score_t2 > 75.0 and ev_pct_t2 > 0.0 and b2 > 0:
+    if oracle_score_t2 > 65.0 and ev_pct_t2 > 0.0 and b2 > 0:
         f_star2 = (p_comb_t2 * b2 - q2) / b2
         stake_pct_t2 = min(0.020, max(0.004, f_star2 * kelly_multiplier * 0.45))
         stake_t2 = round(bankroll * stake_pct_t2, -2 if bankroll >= 10000 else 1)
@@ -586,7 +611,7 @@ def generate_betplay_same_game_parlays(
 
     b3 = odds_comb_t3 - 1.0
     q3 = 1.0 - p_comb_t3
-    if oracle_score_t3 > 75.0 and ev_pct_t3 > 0.0 and b3 > 0:
+    if oracle_score_t3 > 65.0 and ev_pct_t3 > 0.0 and b3 > 0:
         f_star3 = (p_comb_t3 * b3 - q3) / b3
         stake_pct_t3 = min(0.015, max(0.003, f_star3 * kelly_multiplier * 0.35))
         stake_t3 = round(bankroll * stake_pct_t3, -2 if bankroll >= 10000 else 1)

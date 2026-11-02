@@ -479,7 +479,7 @@ def calculate_oracle_score(
     if score >= 90.0:
         is_golden = True
         tier = "🔥 GOLDEN PICK (Alta Certeza Matemática)"
-    elif score > 75.0:
+    elif score > 65.0:
         is_golden = False
         tier = "🟢 LUZ VERDE (+EV Calificado)"
     else:
@@ -494,9 +494,9 @@ def analyze_soccer_match(
     sport_meta: Dict[str, Any],
     bankroll: float = 1000.0,
     kelly_k: float = 0.20,
-    min_ev: float = 3.0,
-    min_odds: float = 1.40,
-    max_odds: float = 2.25,
+    min_ev: float = 2.0,
+    min_odds: float = 1.30,
+    max_odds: float = 2.80,
     ai_adjustment: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Analyzes a soccer match to detect +EV opportunities with institutional precision:
@@ -610,7 +610,7 @@ def analyze_soccer_match(
         )
 
         if passes_filter:
-            if score_dnb > 75.0:
+            if score_dnb > 65.0:
                 kelly_res = calculate_kelly_stake(
                     odds=synthetic_odds_dnb,
                     effective_prob=p_eff_dnb,
@@ -740,7 +740,7 @@ def analyze_soccer_match(
                         )
 
                         if passes_filter:
-                            if score_over2 > 75.0:
+                            if score_over2 > 65.0:
                                 kelly_res = calculate_kelly_stake(
                                     odds=price,
                                     effective_prob=p_eff_over2,
@@ -816,7 +816,7 @@ def analyze_soccer_match(
                         )
 
                         if passes_filter:
-                            if score_tot > 75.0:
+                            if score_tot > 65.0:
                                 kelly_res = calculate_kelly_stake(
                                     odds=price,
                                     effective_prob=p_sel,

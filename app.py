@@ -551,7 +551,7 @@ min_ev_filter = st.sidebar.slider(
     "Filtrar EV Mínimo (%)",
     min_value=0.5,
     max_value=12.0,
-    value=3.5,
+    value=2.0,
     step=0.5,
     help="Solo se mostrarán operaciones con Esperanza Matemática Positiva superior o igual a este valor.",
 )
@@ -560,7 +560,7 @@ odds_range = st.sidebar.slider(
     "Rango Eficiente de Cuotas",
     min_value=1.20,
     max_value=3.50,
-    value=(1.40, 2.25),
+    value=(1.30, 2.80),
     step=0.05,
     help="Rango óptimo de cuotas para maximizar valor y reducir la racha de varianza negativa.",
 )
@@ -799,7 +799,7 @@ with tab_scanner:
         # Calificación institucional: Solo pasan apuestas con Score de Oráculo > 75/100, EV >= umbral y cuota en rango
         qualified_signals = [
             opp for opp in detected_opportunities
-            if float(opp.get("oracle_score", 0.0)) > 75.0
+            if float(opp.get("oracle_score", 0.0)) > 65.0
             and float(opp.get("ev_percent", 0.0)) >= min_qual_ev
             and min_o <= float(opp.get("odds", 0.0)) <= max_o
             and float(opp.get("recommended_stake", 0.0)) > 0
@@ -816,14 +816,14 @@ with tab_scanner:
         # ----------------------------------------------------------------------
         st.markdown("### 🎯 Oportunidades Automáticas con +EV Detectadas Hoy")
         st.caption(
-            f"Filtros de Gobernanza Institucional: **Score de Oráculo > 75/100**, **EV ≥ {min_qual_ev:.1f}%**, "
+            f"Filtros de Gobernanza Institucional: **Score de Oráculo > 65/100**, **EV ≥ {min_qual_ev:.1f}%**, "
             f"**Cuotas [{min_o:.2f}, {max_o:.2f}]**, y **Kelly Stake** (k={kelly_multiplier})."
         )
 
         if not qualified_signals:
             st.warning(
                 f"⚠️ **Sin operaciones 'Luz Verde' hoy:** Ninguna selección alcanzó el Score de Oráculo institucional "
-                f"(> 75/100) y filtros de seguridad simultáneos. "
+                f"(> 65/100) y filtros de seguridad simultáneos. "
                 "El modelo cuantitativo protege el 100% de tu capital bloqueando apuestas de baja certeza matemática o margen desfavorable."
             )
         else:
@@ -962,7 +962,7 @@ with tab_scanner:
         st.markdown("---")
         with st.expander(f"📁 Partidos Descartados por Filtro de Seguridad ({len(discarded_fixtures)} eventos)", expanded=False):
             st.caption(
-                "Partidos donde la ventaja está del lado de la casa de apuestas o el Score de Oráculo fue ≤ 75/100. "
+                "Partidos donde la ventaja está del lado de la casa de apuestas o el Score de Oráculo fue ≤ 65/100. "
                 "En estos partidos el sistema **bloquea el stake ($0)** para preservar tu capital."
             )
             if discarded_fixtures:
@@ -1139,8 +1139,8 @@ with tab_betplay:
 
                     if is_neg_ev:
                         gov_banner = '<div style="background: rgba(239, 68, 68, 0.18); border: 1.5px solid #ef4444; border-radius: 8px; padding: 7px 10px; margin: 8px 0; text-align: center; color: #fca5a5; font-weight: 800; font-size: 0.82rem;">⛔ NO APOSTAR (EV Negativo - Sin Valor Matemático)</div>'
-                    elif c_score <= 75.0:
-                        gov_banner = f'<div style="background: rgba(245, 158, 11, 0.15); border: 1.5px solid #f59e0b; border-radius: 8px; padding: 7px 10px; margin: 8px 0; text-align: center; color: #fde68a; font-weight: 800; font-size: 0.80rem;">🔒 STAKE BLOQUEADO ($0 COP): Score de Oráculo ({c_score:.1f}/100) ≤ 75</div>'
+                    elif c_score <= 65.0:
+                        gov_banner = f'<div style="background: rgba(245, 158, 11, 0.15); border: 1.5px solid #f59e0b; border-radius: 8px; padding: 7px 10px; margin: 8px 0; text-align: center; color: #fde68a; font-weight: 800; font-size: 0.80rem;">🔒 STAKE BLOQUEADO ($0 COP): Score de Oráculo ({c_score:.1f}/100) ≤ 65</div>'
                     else:
                         gov_banner = ""
 
@@ -1191,11 +1191,11 @@ with tab_betplay:
 {gov_banner}
 <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #1e3a5f; padding-top: 8px; margin-top: 6px;">
 <span style="color: #f1f5f9; font-weight: 700; font-size: 0.86rem;">Stake Sugerido (Kelly):</span>
-<span style="color: {'#ef4444' if (is_neg_ev or c_score <= 75.0) else '#34d399'}; font-weight: 800; font-size: 1.02rem;">{format_money(0.0 if (is_neg_ev or c_score <= 75.0) else card['recommended_stake'], selected_curr_code)}</span>
+<span style="color: {'#ef4444' if (is_neg_ev or c_score <= 65.0) else '#34d399'}; font-weight: 800; font-size: 1.02rem;">{format_money(0.0 if (is_neg_ev or c_score <= 65.0) else card['recommended_stake'], selected_curr_code)}</span>
 </div>
 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 3px;">
 <span style="color: #94a3b8; font-size: 0.80rem;">Ganancia Neta Potencial:</span>
-<span style="color: #a7f3d0; font-size: 0.85rem; font-weight: 700;">+{format_money(0.0 if c_score <= 75.0 else card['potential_profit'], selected_curr_code)}</span>
+<span style="color: #a7f3d0; font-size: 0.85rem; font-weight: 700;">+{format_money(0.0 if c_score <= 65.0 else card['potential_profit'], selected_curr_code)}</span>
 </div>
 </div>
 
