@@ -166,39 +166,42 @@ def fetch_odds(
             if not events:
                 return [], metadata, f"El torneo '{sport_key}' no tiene eventos programados con cuotas activas actualmente."
             
-            # FILTRO ESTRICTO COLOMBIA (COLJUEGOS):
-            # 1. Conservar 'pinnacle' únicamente como oráculo matemático de cuota limpia (Vig-Free Oracle).
-            # 2. Conservar y mapear exclusivamente casas autorizadas en Colombia (BetPlay, Rushbet, Wplay, Bwin Colombia).
-            # 3. Eliminar completamente casas extranjeras/offshore (DraftKings, FanDuel, Bovada, 1xBet, etc.).
+            # Prioritizar casas de referencia global (Sharp Books) y casas autorizadas
+            sharp_rank = {
+                "pinnacle": 1,
+                "bet365": 2,
+                "betfair": 3,
+                "betfair_ex_uk": 4,
+                "betfair_ex_eu": 5,
+                "unibet": 6,
+                "williamhill": 7,
+                "betonlineag": 8,
+                "draftkings": 9,
+                "fanduel": 10,
+                "bovada": 11,
+            }
+
             for ev in events:
+                raw_bms = ev.get("bookmakers", [])
                 filtered_bms: List[Dict[str, Any]] = []
-                seen_titles: set = set()
+                seen_keys: set = set()
 
-                # Conservar Pinnacle de primero para cálculos matemáticos del motor
-                pinnacle_bm = next((b for b in ev.get("bookmakers", []) if b.get("key", "").lower() == "pinnacle"), None)
-                if pinnacle_bm:
-                    filtered_bms.append(pinnacle_bm)
-
-                # Mapear y filtrar casas de Colombia
-                for bm in ev.get("bookmakers", []):
+                for bm in raw_bms:
                     k = bm.get("key", "").lower()
-                    if k == "pinnacle":
+                    if k in seen_keys:
                         continue
+                    seen_keys.add(k)
+                    # Normalize titles if in Colombian map for BetPlay familiarity, else preserve sharp branding
                     if k in COLOMBIAN_BOOKMAKERS_MAP:
-                        target_title = COLOMBIAN_BOOKMAKERS_MAP[k]
-                        bm["title"] = target_title
-                        if target_title not in seen_titles:
-                            seen_titles.add(target_title)
-                            filtered_bms.append(bm)
-                        else:
-                            # Si ya existe esta casa por otra llave (ej. bet365 y unibet), unificar mercados faltantes
-                            existing = next(b for b in filtered_bms if b.get("title") == target_title)
-                            existing_mkts = {m.get("key") for m in existing.get("markets", [])}
-                            for m in bm.get("markets", []):
-                                if m.get("key") not in existing_mkts:
-                                    existing.setdefault("markets", []).append(m)
-                                    existing_mkts.add(m.get("key"))
+                        bm["display_title"] = COLOMBIAN_BOOKMAKERS_MAP[k]
+                    elif k == "pinnacle":
+                        bm["display_title"] = "Pinnacle (Sharp Oracle)"
+                    else:
+                        bm["display_title"] = bm.get("title", k.capitalize())
+                    filtered_bms.append(bm)
 
+                # Sort by sharp liquidity ranking so Pinnacle/Bet365/Betfair come first
+                filtered_bms.sort(key=lambda b: sharp_rank.get(b.get("key", "").lower(), 99))
                 ev["bookmakers"] = filtered_bms
 
             return events, metadata, None

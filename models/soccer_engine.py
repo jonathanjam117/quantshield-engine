@@ -99,6 +99,99 @@ def solve_lambda_from_over(line: float, odds_over: float, margin: float = 1.075)
         return 2.70
 
 
+SHARP_KEYS: List[str] = [
+    "pinnacle", "bet365", "betfair", "betfair_ex_uk", "betfair_ex_eu",
+    "unibet", "williamhill", "betonlineag", "draftkings", "fanduel", "bovada"
+]
+
+
+def find_sharp_bookmaker(bookmakers: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Returns the highest liquidity sharp bookmaker available in the event."""
+    if not bookmakers:
+        return None
+    for k in SHARP_KEYS:
+        bm = next((b for b in bookmakers if b.get("key", "").lower() == k), None)
+        if bm:
+            return bm
+    return bookmakers[0]
+
+
+def extract_sharp_totals(bookmakers: List[Dict[str, Any]]) -> Optional[Tuple[float, float, str]]:
+    """Extracts the best totals line (Over point, Over price, bookmaker name) from sharp books."""
+    sorted_bms = sorted(
+        bookmakers,
+        key=lambda b: SHARP_KEYS.index(b.get("key", "").lower()) if b.get("key", "").lower() in SHARP_KEYS else 999
+    )
+    for bm in sorted_bms:
+        for m in bm.get("markets", []):
+            if m.get("key") == "totals":
+                for out in m.get("outcomes", []):
+                    name_low = str(out.get("name", "")).lower()
+                    if name_low in ("over", "más de", "mas de"):
+                        pt = float(out.get("point", 0.0))
+                        price = float(out.get("price", 0.0))
+                        if pt > 0 and price > 1.01:
+                            bm_title = bm.get("display_title", bm.get("title", bm.get("key", "Sharp")))
+                            return pt, price, bm_title
+    return None
+
+
+def extract_event_market_odds(event: Dict[str, Any]) -> Dict[str, float]:
+    """Automatically extracts all relevant market retail odds (1X2, synthetic DC, DNB, totals)
+    from the sharpest bookmakers in the event.
+    """
+    home = event.get("home_team", "")
+    away = event.get("away_team", "")
+    bms = event.get("bookmakers", [])
+    odds_map: Dict[str, float] = {}
+
+    for bm in bms:
+        for m in bm.get("markets", []):
+            if m.get("key") == "h2h":
+                for o in m.get("outcomes", []):
+                    p = float(o.get("price", 0.0))
+                    if p > 1.0:
+                        name = o.get("name", "")
+                        if name == home and "1" not in odds_map:
+                            odds_map["1"] = p
+                        elif name in ("Draw", "Empate", "X") and "X" not in odds_map:
+                            odds_map["X"] = p
+                        elif name == away and "2" not in odds_map:
+                            odds_map["2"] = p
+            elif m.get("key") == "totals":
+                for o in m.get("outcomes", []):
+                    name_low = str(o.get("name", "")).lower()
+                    if name_low in ("over", "más de", "mas de"):
+                        pt = float(o.get("point", 0.0))
+                        p = float(o.get("price", 0.0))
+                        if p > 1.0:
+                            if abs(pt - 1.5) < 0.1 and "O15" not in odds_map:
+                                odds_map["O15"] = p
+                            elif abs(pt - 2.5) < 0.1 and "O25" not in odds_map:
+                                odds_map["O25"] = p
+                            elif abs(pt - 3.5) < 0.1 and "O35" not in odds_map:
+                                odds_map["O35"] = p
+
+    if "1" not in odds_map:
+        odds_map["1"] = 2.50
+    if "X" not in odds_map:
+        odds_map["X"] = 3.30
+    if "2" not in odds_map:
+        odds_map["2"] = 2.60
+
+    o1 = odds_map["1"]
+    ox = odds_map["X"]
+    o2 = odds_map["2"]
+    if o1 > 1.0 and ox > 1.0:
+        odds_map["1X"] = round(max(1.08, 1.0 / ((1.0 / o1) + (1.0 / ox))), 2)
+    if o2 > 1.0 and ox > 1.0:
+        odds_map["X2"] = round(max(1.08, 1.0 / ((1.0 / o2) + (1.0 / ox))), 2)
+    if o1 > 1.0 and o2 > 1.0:
+        odds_map["12"] = round(max(1.08, 1.0 / ((1.0 / o1) + (1.0 / o2))), 2)
+
+    return odds_map
+
+
 def resolve_event_lambdas(
     event: Dict[str, Any],
     sport_meta: Optional[Dict[str, Any]] = None,
@@ -106,101 +199,70 @@ def resolve_event_lambdas(
     custom_odds: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, float, str]:
     """Resolves and caches dynamic Poisson lambdas (lambda_h, lambda_a) for an event
-    using Football-Data CSV, Oracle vig-free probabilities, or league averages,
-    adjusted by Gemini AI if provided, or calibrated via custom BetPlay odds override.
+    100% automatically using sharp bookmaker vig-free probabilities and total goals line,
+    adjusted by Gemini AI if provided.
     """
-    if custom_odds:
-        o1 = float(custom_odds.get("1", 0.0))
-        ox = float(custom_odds.get("X", 0.0))
-        o2 = float(custom_odds.get("2", 0.0))
-        g_line = float(custom_odds.get("goal_line", 2.5))
-        g_odds = float(custom_odds.get("goal_odds", 1.85))
-
-        if g_odds > 1.01:
-            tot_lam = solve_lambda_from_over(g_line, g_odds)
-        else:
-            tot_lam = 2.70
-
-        if o1 > 1.0 and o2 > 1.0:
-            inv1 = 1.0 / o1
-            inv2 = 1.0 / o2
-            denom = inv1 + inv2
-            w1 = inv1 / denom if denom > 0 else 0.5
-            w2 = inv2 / denom if denom > 0 else 0.5
-        else:
-            w1, w2 = 0.5, 0.5
-
-        lh = tot_lam * w1
-        la = tot_lam * w2
-        src = f"⚡ BetPlay Sync (xG Tot: {tot_lam:.2f} | +{g_line} @{g_odds:.2f})"
-
-        if ai_adjustment is not None:
-            f_h = float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0))
-            f_a = float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0))
-            lh = float(np.clip(lh * f_h, 0.35, 4.50))
-            la = float(np.clip(la * f_a, 0.35, 4.50))
-            if f_h != 1.0 or f_a != 1.0:
-                src += f" + IA (H: {f_h:.2f}x | A: {f_a:.2f}x)"
-
-        lh = round(float(lh), 2)
-        la = round(float(la), 2)
-        event["lambda_h"] = lh
-        event["lambda_a"] = la
-        event["lambda_source"] = src
-        return lh, la, src
-
-    if "lambda_h" in event and "lambda_a" in event:
+    if "lambda_h" in event and "lambda_a" in event and not custom_odds:
         return float(event["lambda_h"]), float(event["lambda_a"]), str(event.get("lambda_source", "Cache"))
 
     home_team = event.get("home_team", "")
     away_team = event.get("away_team", "")
     bookmakers = event.get("bookmakers", [])
 
-    oracle_data = None
-    if bookmakers:
-        pinnacle_bm = next((b for b in bookmakers if b.get("key") == "pinnacle"), None)
-        if pinnacle_bm:
-            oracle_data = extract_vig_free_h2h(pinnacle_bm)
-        if not oracle_data:
-            for b in bookmakers:
-                od = extract_vig_free_h2h(b)
-                if od:
-                    oracle_data = od
-                    break
+    # 1. Sharp Bookmaker for 1X2 Vig-Free probabilities
+    sharp_bm = find_sharp_bookmaker(bookmakers)
+    oracle_data = extract_vig_free_h2h(sharp_bm) if sharp_bm else None
+    if not oracle_data:
+        for b in bookmakers:
+            od = extract_vig_free_h2h(b)
+            if od:
+                oracle_data = od
+                sharp_bm = b
+                break
 
-    oracle_probs = (oracle_data["p_clean_h"], oracle_data["p_clean_x"], oracle_data["p_clean_a"]) if oracle_data else None
-    csv_code = sport_meta.get("csv_code") if sport_meta else None
+    sharp_title = sharp_bm.get("display_title", sharp_bm.get("title", sharp_bm.get("key", "Sharp"))) if sharp_bm else "Sharp"
 
-    lh, la, src = load_historical_forces(
-        csv_code=csv_code,
-        home_team=home_team,
-        away_team=away_team,
-        oracle_probs=oracle_probs,
-    )
+    # 2. Derive total expected goals (lambda_tot) automatically from sharp totals line
+    sharp_totals = extract_sharp_totals(bookmakers)
+    if sharp_totals:
+        tot_pt, tot_odds, tot_bm = sharp_totals
+        tot_lam = solve_lambda_from_over(tot_pt, tot_odds)
+        src = f"⚡ Oráculo Sharp ({tot_bm} Over {tot_pt} @{tot_odds:.2f} ➔ λ_tot: {tot_lam:.2f})"
+    else:
+        # Fallback to historical forces
+        oracle_probs = (oracle_data["p_clean_h"], oracle_data["p_clean_x"], oracle_data["p_clean_a"]) if oracle_data else None
+        csv_code = sport_meta.get("csv_code") if sport_meta else None
+        lh_hist, la_hist, hist_src = load_historical_forces(
+            csv_code=csv_code,
+            home_team=home_team,
+            away_team=away_team,
+            oracle_probs=oracle_probs,
+        )
+        tot_lam = (lh_hist + la_hist) if (lh_hist + la_hist) > 0 else 2.65
+        src = f"📊 Modelo Histórico ({hist_src} ➔ λ_tot: {tot_lam:.2f})"
 
-    # Enforce market reality: if market odds clearly favor away or home, lambdas MUST match
+    # 3. Split lambda_tot proportionally to clean Vig-Free probabilities
     if oracle_data:
         p_clean_h = float(oracle_data["p_clean_h"])
         p_clean_a = float(oracle_data["p_clean_a"])
-        tot_lam = (lh + la) if (lh + la) > 0 else 2.60
-        # If Away is favorite by market odds (p_clean_a > p_clean_h), away lambda must be higher
-        if p_clean_a > p_clean_h and lh >= la:
-            ratio = (p_clean_h / p_clean_a) ** 0.65
-            lh = tot_lam * (ratio / (1.0 + ratio))
-            la = tot_lam * (1.0 / (1.0 + ratio))
-            src += " [Calibrado a Favorito Mercado Visita]"
-        elif p_clean_h > p_clean_a and la >= lh:
-            ratio = (p_clean_h / p_clean_a) ** 0.65
-            lh = tot_lam * (ratio / (1.0 + ratio))
-            la = tot_lam * (1.0 / (1.0 + ratio))
-            src += " [Calibrado a Favorito Mercado Local]"
+        denom = p_clean_h + p_clean_a
+        w_h = (p_clean_h / denom) if denom > 0 else 0.5
+        w_a = (p_clean_a / denom) if denom > 0 else 0.5
+        lh = tot_lam * w_h
+        la = tot_lam * w_a
+        src += f" [Vig-Free {sharp_title}: {p_clean_h:.1%} vs {p_clean_a:.1%}]"
+    else:
+        lh = tot_lam * 0.50
+        la = tot_lam * 0.50
 
+    # 4. Apply AI tactical adjustments if enabled (strictly neutral 1.00 by default)
     if ai_adjustment is not None:
         f_h = float(get_ai_field(ai_adjustment, "factor_ajuste_local", 1.0))
         f_a = float(get_ai_field(ai_adjustment, "factor_ajuste_visita", 1.0))
         lh = float(np.clip(lh * f_h, 0.35, 4.50))
         la = float(np.clip(la * f_a, 0.35, 4.50))
-        src += f" + IA Gemini (H: {f_h:.2f}x | A: {f_a:.2f}x)"
+        if f_h != 1.0 or f_a != 1.0:
+            src += f" + IA (H: {f_h:.2f}x | A: {f_a:.2f}x)"
 
     lh = round(float(lh), 2)
     la = round(float(la), 2)
@@ -343,9 +405,7 @@ def analyze_soccer_match(
         bm_title = bm.get("title", bm_key.capitalize())
         if bm_key == "pinnacle":
             continue  # Compare recreational against oracle
-        # Filtrar exclusivamente casas autorizadas en Colombia
-        if not any(h in bm_title for h in ("BetPlay", "Rushbet", "Wplay", "Bwin", "Codere", "Betsson", "Yajuego", "Rivalo", "Mozzart")):
-            continue
+        # Casas autorizadas / sharp disponibles
 
         h2h_data = extract_vig_free_h2h(bm)
         if not h2h_data:
@@ -468,9 +528,7 @@ def analyze_soccer_match(
         bm_title = bm.get("title", bm_key.capitalize())
         if bm_key == "pinnacle":
             continue
-        # Filtrar exclusivamente casas autorizadas en Colombia
-        if not any(h in bm_title for h in ("BetPlay", "Rushbet", "Wplay", "Bwin", "Codere", "Betsson", "Yajuego", "Rivalo", "Mozzart")):
-            continue
+        # Casas autorizadas / sharp disponibles
 
         for m in bm.get("markets", []):
             m_key = m.get("key", "").lower()
@@ -704,5 +762,56 @@ def analyze_soccer_match(
                             "lambdas": f"λH: {lambda_h} | λA: {lambda_a} (P: {round(p_sel*100, 1)}%)",
                             "ai_adjustment": ai_adj_dict,
                         })
+
+
+    # ==========================================
+    # MARKET C: Combinadas Inteligentes SGP (Same-Game Parlays)
+    # ==========================================
+    try:
+        from models.betplay_markets import calculate_betplay_security_catalog, generate_betplay_same_game_parlays
+        retail_odds_map = extract_event_market_odds(event)
+        sgp_cat = calculate_betplay_security_catalog(
+            home_team=home_team,
+            away_team=away_team,
+            lambda_h=lambda_h,
+            lambda_a=lambda_a,
+            bankroll=bankroll,
+            kelly_multiplier=kelly_k,
+            retail_odds=retail_odds_map,
+        )
+        sgp_cards = generate_betplay_same_game_parlays(
+            catalog=sgp_cat,
+            bankroll=bankroll,
+            kelly_multiplier=kelly_k,
+            ai_adjustment=ai_adjustment,
+        )
+        for card in sgp_cards:
+            c_odds = float(card["odds"])
+            c_ev = float(card["ev_pct"])
+            c_stake = float(card["recommended_stake"])
+            if c_ev >= min_ev and min_odds <= c_odds <= max_odds and c_stake > 0:
+                legs_text = " + ".join([f"{l['selection']} (@{l['odds']:.2f})" for l in card["legs"]])
+                opportunities.append({
+                    "sport": "Fútbol",
+                    "tournament": sport_meta.get("name", "Fútbol"),
+                    "match": match_name,
+                    "commence_time": event.get("commence_time", ""),
+                    "market": card["badge"],
+                    "selection": f"{card['badge']}: {legs_text}",
+                    "bookmaker": "BetPlay (Crea tu Apuesta)",
+                    "odds": c_odds,
+                    "fair_odds": float(card["fair_odds"]),
+                    "effective_prob_pct": float(card["prob_pct"]),
+                    "ev_percent": c_ev,
+                    "recommended_stake": c_stake,
+                    "recommended_stake_pct": round((c_stake / bankroll) * 100.0, 2) if bankroll > 0 else 0.0,
+                    "is_capped": False,
+                    "instructions": card["instructions"],
+                    "dutching": None,
+                    "lambdas": f"λH: {lambda_h} | λA: {lambda_a} ({source_desc})",
+                    "ai_adjustment": ai_adj_dict,
+                })
+    except Exception:
+        pass
 
     return opportunities

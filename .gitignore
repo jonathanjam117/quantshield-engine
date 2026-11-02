@@ -68,3 +68,6 @@ logs/
 
 # Jupyter Notebooks (si se usan para análisis)
 .ipynb_checkpoints/
+
+# Scratch scripts
+scratch/
