@@ -77,6 +77,183 @@ def get_available_sports() -> Dict[str, Dict[str, Dict[str, Any]]]:
     return SUPPORTED_SPORTS
 
 
+# ==============================================================================
+# MOTOR 1: STEAM CHASING & SMART MONEY TRACKER
+# ==============================================================================
+# In-memory temporary cache tracking opening odds vs current odds for Sharp Books (Pinnacle/Consensus)
+_STEAM_ODDS_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def get_steam_cache() -> Dict[str, Dict[str, Any]]:
+    """Returns the in-memory cache of opening and current odds for all events."""
+    return _STEAM_ODDS_CACHE
+
+
+def extract_sharp_h2h_odds(event: Dict[str, Any]) -> Tuple[Dict[str, float], str]:
+    """Extracts clean 1X2 market prices from the sharpest bookmaker in the event."""
+    bms = event.get("bookmakers", [])
+    sharp_rank = ["pinnacle", "betfair", "betfair_ex_uk", "betfair_ex_eu", "bet365", "unibet"]
+    sorted_bms = sorted(
+        bms,
+        key=lambda b: sharp_rank.index(b.get("key", "").lower()) if b.get("key", "").lower() in sharp_rank else 999
+    )
+    for bm in sorted_bms:
+        for m in bm.get("markets", []):
+            if m.get("key") == "h2h":
+                prices = {}
+                for o in m.get("outcomes", []):
+                    prices[o.get("name", "")] = float(o.get("price", 0.0))
+                home = event.get("home_team", "")
+                away = event.get("away_team", "")
+                draw_k = next((k for k in prices if "draw" in k.lower() or "empate" in k.lower() or k == "X"), None)
+                o1 = prices.get(home, 0.0)
+                o2 = prices.get(away, 0.0)
+                ox = prices.get(draw_k, 0.0) if draw_k else 0.0
+                if o1 > 1.0 and o2 > 1.0:
+                    bm_name = bm.get("display_title", bm.get("title", bm.get("key", "Sharp Book")))
+                    return {"1": o1, "X": ox, "2": o2}, bm_name
+    return {}, "Sharp Book"
+
+
+def update_steam_cache(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Records or updates timestamp and odds for an event in the Steam Chasing cache."""
+    ev_id = str(event.get("id") or f"{event.get('home_team')} vs {event.get('away_team')}")
+    now = datetime.now()
+    curr_odds, bm_name = extract_sharp_h2h_odds(event)
+
+    sim_open = event.get("opening_odds")
+    sim_time_ago = float(event.get("opening_hours_ago", 2.5))
+
+    if ev_id not in _STEAM_ODDS_CACHE:
+        if sim_open:
+            _STEAM_ODDS_CACHE[ev_id] = {
+                "first_seen": now - timedelta(hours=sim_time_ago),
+                "open_odds": dict(sim_open),
+                "last_seen": now,
+                "current_odds": curr_odds if curr_odds else dict(sim_open),
+                "bookmaker": bm_name,
+            }
+        else:
+            if curr_odds:
+                _STEAM_ODDS_CACHE[ev_id] = {
+                    "first_seen": now,
+                    "open_odds": dict(curr_odds),
+                    "last_seen": now,
+                    "current_odds": dict(curr_odds),
+                    "bookmaker": bm_name,
+                }
+    else:
+        cached = _STEAM_ODDS_CACHE[ev_id]
+        cached["last_seen"] = now
+        if curr_odds:
+            cached["current_odds"] = dict(curr_odds)
+            cached["bookmaker"] = bm_name
+
+    return _STEAM_ODDS_CACHE.get(ev_id, {})
+
+
+def detect_steam_moves(
+    event_or_odds: Any,
+    window_hours: float = 4.0,
+    threshold_pct: float = 10.0,
+) -> Dict[str, Any]:
+    """Identifies if a sharp bookmaker line has dropped more than 10% in the last 4 hours (Steam Chasing).
+
+    Returns:
+        Dict with is_steam (bool), drop_pct, favored side/team, badge, and description.
+    """
+    if isinstance(event_or_odds, dict) and ("home_team" in event_or_odds or "bookmakers" in event_or_odds):
+        event = event_or_odds
+        cached = update_steam_cache(event)
+    elif isinstance(event_or_odds, str) and event_or_odds in _STEAM_ODDS_CACHE:
+        event = None
+        cached = _STEAM_ODDS_CACHE[event_or_odds]
+    elif isinstance(event_or_odds, dict) and "open_odds" in event_or_odds and "current_odds" in event_or_odds:
+        event = None
+        cached = event_or_odds
+    else:
+        cached = {}
+
+    if not cached or "open_odds" not in cached or "current_odds" not in cached:
+        return {
+            "is_steam": False,
+            "steam_detected": False,
+            "drop_pct": 0.0,
+            "side": None,
+            "team": "",
+            "open_odds": 0.0,
+            "current_odds": 0.0,
+            "hours_elapsed": 0.0,
+            "badge": "⚪ LÍNEA ESTABLE",
+            "description": "Sin datos de apertura suficientes para análisis de caída.",
+            "bonus_points": 0.0,
+        }
+
+    first_seen = cached["first_seen"]
+    last_seen = cached["last_seen"]
+    hours_elapsed = max(0.1, (last_seen - first_seen).total_seconds() / 3600.0)
+
+    open_odds = cached["open_odds"]
+    curr_odds = cached["current_odds"]
+    bm = cached.get("bookmaker", "Pinnacle/Sharp")
+
+    home_name = event.get("home_team", "Local") if isinstance(event, dict) else "Local"
+    away_name = event.get("away_team", "Visita") if isinstance(event, dict) else "Visita"
+
+    max_drop = 0.0
+    best_side = None
+    best_open = 0.0
+    best_curr = 0.0
+    favored_team = ""
+
+    for side, team_n in [("1", home_name), ("2", away_name), ("X", "Empate")]:
+        o_open = float(open_odds.get(side, 0.0))
+        o_curr = float(curr_odds.get(side, 0.0))
+        if o_open > 1.0 and o_curr > 1.0 and o_open > o_curr:
+            drop = ((o_open - o_curr) / o_open) * 100.0
+            if drop > max_drop:
+                max_drop = drop
+                best_side = side
+                best_open = o_open
+                best_curr = o_curr
+                favored_team = team_n
+
+    if max_drop >= threshold_pct and hours_elapsed <= (window_hours + 0.5):
+        return {
+            "is_steam": True,
+            "steam_detected": True,
+            "drop_pct": round(max_drop, 1),
+            "side": best_side,
+            "team": favored_team,
+            "open_odds": round(best_open, 2),
+            "current_odds": round(best_curr, 2),
+            "hours_elapsed": round(hours_elapsed, 1),
+            "bookmaker": bm,
+            "badge": "🚨 ALERTA SMART MONEY",
+            "description": (
+                f"Línea de '{favored_team}' cayó un {max_drop:.1f}% en {bm} "
+                f"(@{best_open:.2f} ➔ @{best_curr:.2f}) en las últimas {hours_elapsed:.1f}h. "
+                "Información institucional pesada entrando al mercado. ¡Atacar en BetPlay antes del ajuste local!"
+            ),
+            "bonus_points": 100.0,
+        }
+
+    return {
+        "is_steam": False,
+        "steam_detected": False,
+        "drop_pct": round(max_drop, 1),
+        "side": best_side,
+        "team": favored_team,
+        "open_odds": round(best_open, 2) if best_open > 0 else 0.0,
+        "current_odds": round(best_curr, 2) if best_curr > 0 else 0.0,
+        "hours_elapsed": round(hours_elapsed, 1),
+        "bookmaker": bm,
+        "badge": "⚪ LÍNEA ESTABLE",
+        "description": "Línea sin caídas abruptas (<10% de variación en casas sharp).",
+        "bonus_points": 0.0,
+    }
+
+
 def format_event_name(event: Dict[str, Any]) -> str:
     """Returns a clean display name for an event."""
     home = event.get("home_team", "Local")
@@ -109,6 +286,8 @@ def fetch_odds(
         metadata["requests_used"] = "0"
         metadata["source"] = "demo"
         mock_data = get_simulation_events(sport_key)
+        for ev in mock_data:
+            update_steam_cache(ev)
         return mock_data, metadata, None
 
     # If demo is disabled but no API key was provided, try auto-reading st.secrets and os.getenv
@@ -203,6 +382,7 @@ def fetch_odds(
                 # Sort by sharp liquidity ranking so Pinnacle/Bet365/Betfair come first
                 filtered_bms.sort(key=lambda b: sharp_rank.get(b.get("key", "").lower(), 99))
                 ev["bookmakers"] = filtered_bms
+                update_steam_cache(ev)
 
             return events, metadata, None
 
@@ -247,6 +427,8 @@ def get_simulation_events(sport_key: str) -> List[Dict[str, Any]]:
                 "commence_time": d1,
                 "home_team": "Millonarios",
                 "away_team": "Santa Fe",
+                "opening_odds": {"1": 2.22, "X": 3.25, "2": 3.60},
+                "opening_hours_ago": 2.4,
                 "bookmakers": [
                     {
                         "key": "pinnacle",
@@ -431,6 +613,8 @@ def get_simulation_events(sport_key: str) -> List[Dict[str, Any]]:
                 "commence_time": d1,
                 "home_team": "SC Cambuur",
                 "away_team": "Go Ahead Eagles",
+                "opening_odds": {"1": 2.45, "X": 3.60, "2": 2.75},
+                "opening_hours_ago": 3.1,
                 "bookmakers": [
                     {
                         "key": "pinnacle",
@@ -483,6 +667,8 @@ def get_simulation_events(sport_key: str) -> List[Dict[str, Any]]:
                 "commence_time": d1,
                 "home_team": "PSV Eindhoven",
                 "away_team": "Ajax",
+                "opening_odds": {"1": 1.95, "X": 3.90, "2": 3.80},
+                "opening_hours_ago": 2.1,
                 "bookmakers": [
                     {
                         "key": "pinnacle",

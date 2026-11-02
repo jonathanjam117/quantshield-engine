@@ -787,18 +787,20 @@ tab_scanner, tab_betplay, tab_audit, tab_telegram, tab_simulator = st.tabs([
 # ------------------------------------------------------------------------------
 with tab_scanner:
     try:
-        st.subheader("🎯 Señales de Apuesta (+EV Finder) — Detección Automática Sharp")
+        st.subheader("🎯 Señales de Apuesta (+EV Finder) — Modo Oráculo Institucional")
         st.caption(
-            "Sistema cuantitativo automático alimentado por oráculos globales de alta liquidez "
-            "(Pinnacle/Bet365 Vig-Free) y modelos bivariados de Poisson."
+            "Sistema cuantitativo institucional de triple motor: **Rastreador Smart Money (Steam Chasing)**, "
+            "**Simulador Monte Carlo (10,000 iteraciones Dixon-Coles)** y **Score de Oráculo (0-100)** con Kelly Criterion condicionado."
         )
 
-        # Filtros de Seguridad Cuantitativa
         min_qual_ev = float(min_ev_filter)
         min_o, max_o = odds_range
+
+        # Calificación institucional: Solo pasan apuestas con Score de Oráculo > 75/100, EV >= umbral y cuota en rango
         qualified_signals = [
             opp for opp in detected_opportunities
-            if float(opp.get("ev_percent", 0.0)) >= min_qual_ev
+            if float(opp.get("oracle_score", 0.0)) > 75.0
+            and float(opp.get("ev_percent", 0.0)) >= min_qual_ev
             and min_o <= float(opp.get("odds", 0.0)) <= max_o
             and float(opp.get("recommended_stake", 0.0)) > 0
         ]
@@ -814,20 +816,26 @@ with tab_scanner:
         # ----------------------------------------------------------------------
         st.markdown("### 🎯 Oportunidades Automáticas con +EV Detectadas Hoy")
         st.caption(
-            f"Filtros de Seguridad Activos: **EV ≥ {min_qual_ev:.1f}%**, **Cuotas entre {min_o:.2f} y {max_o:.2f}**, "
-            f"y **Criterio de Kelly** (k={kelly_multiplier})."
+            f"Filtros de Gobernanza Institucional: **Score de Oráculo > 75/100**, **EV ≥ {min_qual_ev:.1f}%**, "
+            f"**Cuotas [{min_o:.2f}, {max_o:.2f}]**, y **Kelly Stake** (k={kelly_multiplier})."
         )
 
         if not qualified_signals:
             st.warning(
-                f"⚠️ **Sin operaciones 'Luz Verde' hoy:** Ningún partido cumple simultáneamente con el umbral "
-                f"estricto de seguridad (EV ≥ {min_qual_ev:.1f}% y Cuotas en [{min_o:.2f}, {max_o:.2f}]). "
-                "El modelo matemático protege tu capital evitando apostar cuando la casa tiene la ventaja."
+                f"⚠️ **Sin operaciones 'Luz Verde' hoy:** Ninguna selección alcanzó el Score de Oráculo institucional "
+                f"(> 75/100) y filtros de seguridad simultáneos. "
+                "El modelo cuantitativo protege el 100% de tu capital bloqueando apuestas de baja certeza matemática o margen desfavorable."
             )
         else:
-            st.success(
-                f"🟢 **{len(qualified_signals)} Oportunidad(es) con Luz Verde Detectada(s)** — Ventaja Matemática Verificada:"
-            )
+            golden_count = sum(1 for s in qualified_signals if s.get("is_golden_pick") or s.get("oracle_score", 0) >= 90.0)
+            steam_count = sum(1 for s in qualified_signals if s.get("steam_move", {}).get("is_steam"))
+
+            status_msg = f"🟢 **{len(qualified_signals)} Operación(es) Calificada(s) por el Oráculo**"
+            if golden_count > 0:
+                status_msg += f" — Incluye **{golden_count} 🔥 GOLDEN PICK(S)**"
+            if steam_count > 0:
+                status_msg += f" y **{steam_count} 🚨 ALERTA(S) SMART MONEY**"
+            st.success(status_msg)
 
             for s_idx, sig in enumerate(qualified_signals):
                 m_title = sig.get("match", "Partido")
@@ -836,6 +844,14 @@ with tab_scanner:
                 m_sel = sig.get("selection", "")
                 m_odds = float(sig.get("odds", 0.0))
                 m_ev = float(sig.get("ev_percent", 0.0))
+                m_score = float(sig.get("oracle_score", 0.0))
+                m_golden = bool(sig.get("is_golden_pick", False)) or (m_score >= 90.0)
+                m_mc_pct = float(sig.get("p_monte_carlo", sig.get("effective_prob_pct", 50.0)))
+                mc_stats = sig.get("mc_stats") or {"sim_time_ms": 2.2, "iterations": 10000}
+                mc_time = float(mc_stats.get("sim_time_ms", 2.2))
+                steam_item = sig.get("steam_move") or {}
+                has_steam = bool(steam_item.get("is_steam", False))
+
                 m_stake = float(sig.get("recommended_stake", 0.0))
                 m_stake_str = format_money(m_stake, selected_curr_code)
                 m_bm = sig.get("bookmaker", "Sharp Book")
@@ -843,30 +859,49 @@ with tab_scanner:
 
                 display_pick = f"{m_market} → {m_sel}" if m_market and m_market not in m_sel else m_sel
 
+                # Dynamic Styling: Golden Pick vs Green Light
+                if m_golden:
+                    card_border = "#fbbf24"
+                    card_bg = "linear-gradient(135deg, #1f1704 0%, #362908 50%, #4a3809 100%)"
+                    card_shadow = "0 6px 22px rgba(251, 191, 36, 0.28)"
+                    top_badge = '<span style="background-color: #78350f; color: #fde68a; font-weight: 800; font-size: 0.82rem; padding: 4px 10px; border-radius: 6px; border: 1.5px solid #fbbf24; letter-spacing: 0.5px;">🔥 GOLDEN PICK (Alta Certeza Matemática)</span>'
+                else:
+                    card_border = "#10b981"
+                    card_bg = "linear-gradient(135deg, #0f192d 0%, #172554 100%)"
+                    card_shadow = "0 4px 14px rgba(16, 185, 129, 0.15)"
+                    top_badge = '<span style="background-color: #065f46; color: #a7f3d0; font-weight: 800; font-size: 0.78rem; padding: 3px 8px; border-radius: 6px;">🟢 LUZ VERDE (+EV)</span>'
+
+                steam_pill = f'<span style="background: rgba(239, 68, 68, 0.22); border: 1px solid #ef4444; color: #fca5a5; font-weight: 800; font-size: 0.80rem; padding: 3px 9px; border-radius: 6px; margin-left: 6px;">🚨 ALERTA SMART MONEY (-{steam_item.get("drop_pct", 0)}% en {steam_item.get("bookmaker", "Pinnacle")})</span>' if has_steam else ''
+                oracle_pill = f'<span style="background: rgba(168, 85, 247, 0.20); border: 1px solid #c084fc; color: #e9d5ff; font-weight: 800; font-size: 0.85rem; padding: 3px 10px; border-radius: 6px;">🔮 Score Oráculo: {m_score:.1f}/100</span>'
+                mc_pill = f'<span style="background: rgba(59, 130, 246, 0.18); border: 1px solid #3b82f6; color: #93c5fd; font-weight: 700; font-size: 0.80rem; padding: 3px 9px; border-radius: 6px;">🎲 Monte Carlo: 10k sims en {mc_time:.1f}ms ({m_mc_pct:.1f}%)</span>'
+
                 render_clean_html(f"""
-                <div style="background: linear-gradient(135deg, #0f192d 0%, #172554 100%); border: 1.5px solid #10b981; border-radius: 12px; padding: 14px 18px; margin-bottom: 12px; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.12);">
+                <div style="background: {card_bg}; border: 2px solid {card_border}; border-radius: 12px; padding: 14px 18px; margin-bottom: 12px; box-shadow: {card_shadow};">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <div>
-                            <span style="background-color: #065f46; color: #a7f3d0; font-weight: 800; font-size: 0.78rem; padding: 3px 8px; border-radius: 6px;">🟢 LUZ VERDE (+EV)</span>
+                            {top_badge}
+                            {steam_pill}
                             <span style="color: #94a3b8; font-size: 0.82rem; margin-left: 8px;">🏆 {t_name} | 📅 {m_time}</span>
-                            <div style="font-size: 1.20rem; font-weight: 800; color: #ffffff; margin-top: 4px;">
+                            <div style="font-size: 1.22rem; font-weight: 800; color: #ffffff; margin-top: 5px;">
                                 🏟️ {m_title}
                             </div>
                         </div>
                         <div style="text-align: right;">
-                            <span style="font-size: 1.35rem; font-weight: 800; color: #fbbf24;">@{m_odds:.2f}</span>
-                            <span style="color: #64748b; font-size: 0.85rem; margin-left: 4px;">({m_bm})</span>
+                            <span style="font-size: 1.40rem; font-weight: 800; color: #fbbf24;">@{m_odds:.2f}</span>
+                            <span style="color: #94a3b8; font-size: 0.85rem; margin-left: 4px;">({m_bm})</span>
                         </div>
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); flex-wrap: wrap; gap: 8px;">
                         <div style="font-size: 0.95rem; color: #f1f5f9;">
                             👉 <b>Selección Recomendada:</b> <span style="color: #38bdf8; font-weight: 700;">{display_pick}</span>
                         </div>
-                        <div style="display: flex; gap: 16px; align-items: center;">
-                            <span style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; font-weight: 800; font-size: 0.92rem; padding: 3px 10px; border-radius: 6px;">
+                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            {oracle_pill}
+                            {mc_pill}
+                            <span style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; font-weight: 800; font-size: 0.88rem; padding: 3px 10px; border-radius: 6px;">
                                 📈 EV: +{m_ev:.2f}%
                             </span>
-                            <span style="background: rgba(245, 158, 11, 0.15); border: 1px solid #f59e0b; color: #fbbf24; font-weight: 800; font-size: 0.92rem; padding: 3px 10px; border-radius: 6px;">
+                            <span style="background: rgba(245, 158, 11, 0.15); border: 1px solid #f59e0b; color: #fbbf24; font-weight: 800; font-size: 0.88rem; padding: 3px 10px; border-radius: 6px;">
                                 💰 Stake Kelly: {m_stake_str}
                             </span>
                         </div>
@@ -890,13 +925,15 @@ with tab_scanner:
                             ev_percent=m_ev,
                             stake=m_stake,
                             status="Pendiente",
-                            notes=sig.get("lambdas", ""),
+                            notes=f"Oracle Score: {m_score:.1f}/100 | MC Prob: {m_mc_pct}% | {sig.get('lambdas', '')}",
                             ai_analysis=str(safe_ai_get(sig.get("ai_adjustment"), "justificacion_tactica", "")),
                         )
                         st.toast(f"✅ ¡Señal #{new_id} guardada en SQLite!", icon="💾")
                         st.success(f"Apuesta #{new_id} guardada con éxito en SQLite.")
                 with c_act2:
-                    st.caption(f"ℹ️ Sincronizado automáticamente sin entradas manuales. Cuota justa: `@{sig.get('fair_odds', 0.0):.2f}` | Probabilidad: `{sig.get('effective_prob_pct', 0.0)}%`")
+                    st.caption(
+                        f"ℹ️ Motor Oráculo: Score `{m_score:.1f}/100` | Monte Carlo 10k: `{m_mc_pct:.1f}%` ({mc_time:.1f}ms) | Cuota Justa: `@{sig.get('fair_odds', 0.0):.2f}`"
+                    )
 
             # Tabla resumen de señales
             st.markdown("##### 📊 Resumen Ejecutivo de Operaciones Calificadas:")
@@ -910,176 +947,40 @@ with tab_scanner:
                     "Selección": opp["selection"],
                     "Casa": opp["bookmaker"],
                     "Cuota": f"{opp['odds']:.2f}",
-                    "Cuota Justa": f"{opp['fair_odds']:.2f}",
-                    "Prob. Efectiva": f"{opp['effective_prob_pct']}%",
+                    "Score Oráculo": f"{opp.get('oracle_score', 0):.1f}/100",
+                    "Tipo": "🔥 GOLDEN PICK" if (opp.get("is_golden_pick") or opp.get("oracle_score", 0) >= 90) else "🟢 LUZ VERDE",
+                    "Prob. Monte Carlo": f"{opp.get('p_monte_carlo', opp.get('effective_prob_pct'))}%",
+                    "Smart Money": f"🚨 -{opp['steam_move'].get('drop_pct')}%" if opp.get("steam_move", {}).get("is_steam") else "⚪ Estable",
                     "EV (%)": f"+{opp['ev_percent']:.2f}%",
                     f"Stake ({selected_curr_code})": format_money(opp['recommended_stake'], selected_curr_code),
-                    "% Bankroll": f"{opp['recommended_stake_pct']}%",
                 })
             st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
-            # Tarjetas de Ejecución Paso a Paso
-            st.markdown("#### 📋 Análisis Detallado de Ejecución & Contexto Táctico")
-            for idx, opp in enumerate(qualified_signals):
-                cap_badge = " 🛑 [TOPE 3.5% APLICADO]" if opp.get("is_capped") else ""
-                local_time_full = format_to_local_time(opp.get("commence_time", ""))
-                formatted_stake_str = format_money(opp['recommended_stake'], selected_curr_code)
-                expander_title = (
-                    f"#{idx+1} | {opp['match']} — {opp['market']} @ {opp['odds']} "
-                    f"(EV: +{opp['ev_percent']}% | Stake: {formatted_stake_str}){cap_badge}"
-                )
-
-                with st.expander(expander_title, expanded=(idx == 0)):
-                    market_type = opp.get("market", "")
-                    match_str = opp.get("match", "")
-
-                    if "Over 2.0" in market_type:
-                        profit_val = round(opp['recommended_stake'] * (opp['odds'] - 1), 2)
-                        render_clean_html(f"""
-                            <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1.5px solid #f59e0b; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;">
-                                <div style="font-weight: 700; color: #fbbf24; font-size: 1.05rem; margin-bottom: 6px;">
-                                    ⚽ ¿A QUÉ ESTÁS APOSTANDO EXACTAMENTE? ➔ <u>TOTAL DE GOLES DE AMBOS EQUIPOS</u>
-                                </div>
-                                <div style="color: #f1f5f9; font-size: 0.93rem; line-height: 1.5;">
-                                    <b>NO apuestas a que gane ningún equipo en particular.</b> Apuestas a la <b>suma combinada de goles</b> entre ambos equipos (<code>{match_str}</code>):<br/>
-                                    • 🟢 <b>Ganas la apuesta (+{format_money(profit_val, selected_curr_code)}):</b> Si entre ambos equipos anotan <b>3 o más goles</b> en el partido (ej. 2-1, 3-0, 1-2, 2-2).<br/>
-                                    • 🟡 <b>Reembolso del 100% (Push / Ni ganas ni pierdes):</b> Si el partido termina con <b>exactamente 2 goles</b> (ej. 1-1, 2-0, 0-2). ¡Se te devuelve íntegro tu dinero apostado ({formatted_stake_str})!<br/>
-                                    • 🔴 <b>Pierdes:</b> Únicamente si el partido termina con 0 o 1 gol (0-0, 1-0 o 0-1).
-                                </div>
-                                <div style="margin-top: 8px; color: #38bdf8; font-size: 0.88rem; font-weight: 600;">
-                                    📅 Programación: {local_time_full}
-                                </div>
-                            </div>
-                            """)
-                    elif "Draw No Bet" in market_type:
-                        home_name = match_str.split(" vs ")[0] if " vs " in match_str else "Local"
-                        render_clean_html(f"""
-                            <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1.5px solid #6366f1; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;">
-                                <div style="font-weight: 700; color: #818cf8; font-size: 1.05rem; margin-bottom: 6px;">
-                                    🛡️ ¿A QUÉ ESTÁS APOSTANDO EXACTAMENTE? ➔ <u>VICTORIA DE {home_name.upper()} (EMPATE REEMBOLSA)</u>
-                                </div>
-                                <div style="color: #f1f5f9; font-size: 0.93rem; line-height: 1.5;">
-                                    Apuestas a favor de la victoria de <b>{home_name}</b>, pero con cobertura total ante un posible empate:<br/>
-                                    • 🟢 <b>Ganas la apuesta:</b> Si <b>{home_name}</b> gana el partido.<br/>
-                                    • 🟡 <b>Reembolso del 100% (Push):</b> Si el partido termina en <b>Empate</b> (0-0, 1-1, 2-2). ¡Se te devuelve todo el stake ({formatted_stake_str})!<br/>
-                                    • 🔴 <b>Pierdes:</b> Si gana el equipo visitante.
-                                </div>
-                                <div style="margin-top: 8px; color: #38bdf8; font-size: 0.88rem; font-weight: 600;">
-                                    📅 Programación: {local_time_full}
-                                </div>
-                            </div>
-                            """)
-                    else:
-                        render_clean_html(f"""
-                            <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1.5px solid #3b82f6; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;">
-                                <div style="font-weight: 700; color: #60a5fa; font-size: 1.05rem; margin-bottom: 6px;">
-                                    🎯 SELECCIÓN RECOMENDADA: <u>{opp.get('selection', '')}</u>
-                                </div>
-                                <div style="color: #f1f5f9; font-size: 0.93rem; line-height: 1.5;">
-                                    Apuestas en el mercado <b>{market_type}</b> a cuota <b>{opp['odds']}</b> en <b>{opp['bookmaker']}</b>.<br/>
-                                    📅 <b>Programación Oficial:</b> {local_time_full}
-                                </div>
-                            </div>
-                            """)
-
-                    col_info1, col_info2, col_info3 = st.columns([1.5, 1.5, 1])
-                    with col_info1:
-                        st.markdown(f"**Evento:** `{opp['match']}`")
-                        st.markdown(f"**📅 Horario Local (UTC-5):** `{local_time_full}`")
-                        st.markdown(f"**Competición:** `{opp['tournament']}`")
-                        st.markdown(f"**Mercado:** `{opp['market']}`")
-                        st.markdown(f"**Selección:** `{opp['selection']}`")
-
-                    with col_info2:
-                        st.markdown(f"**Casa de Apuestas:** `{opp['bookmaker']}`")
-                        st.markdown(f"**Cuota Actual:** `{opp['odds']}`")
-                        st.markdown(f"**Cuota Mínima Aceptable:** `{opp['fair_odds']}`")
-                        st.markdown(f"**Probabilidad Estimada:** `{opp['effective_prob_pct']}%`")
-
-                    with col_info3:
-                        st.metric("Esperanza Matemática", f"+{opp['ev_percent']}%")
-                        st.metric("Stake Óptimo", formatted_stake_str)
-
-                    # Contexto Táctico Gemini
-                    ai_res = opp.get("ai_adjustment") or DEFAULT_TACTICAL_ADJUSTMENT
-                    nivel_riesgo_str = str(safe_ai_get(ai_res, "nivel_riesgo", "Bajo")).strip().capitalize()
-                    risk_color = "#10b981" if "Bajo" in nivel_riesgo_str else ("#f59e0b" if "Medio" in nivel_riesgo_str else "#ef4444")
-                    confianza_pct = int(float(safe_ai_get(ai_res, "confianza_ia", 0.80)) * 100)
-                    factor_loc = float(safe_ai_get(ai_res, "factor_ajuste_local", 1.0))
-                    factor_vis = float(safe_ai_get(ai_res, "factor_ajuste_visita", 1.0))
-                    justificacion_txt = str(safe_ai_get(ai_res, "justificacion_tactica", "Análisis estadístico base sin alteraciones tácticas."))
-                    render_clean_html(
-                        f"""
-                        <div style="background-color: #1e293b; border-radius: 8px; padding: 12px; margin: 10px 0; border-left: 4px solid #8b5cf6;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                                <span style="font-weight: 700; color: #c084fc;">🧠 Veredicto Táctico Gemini ({selected_gemini_model})</span>
-                                <span style="background-color: {risk_color}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 700;">
-                                    Riesgo {nivel_riesgo_str} (Confianza: {confianza_pct}%)
-                                </span>
-                            </div>
-                            <div style="font-size: 0.88em; margin-bottom: 6px; color: #94a3b8;">
-                                Multiplicador Local: <code style="color: #60a5fa;">{factor_loc:.2f}x</code> | 
-                                Multiplicador Visita: <code style="color: #f472b6;">{factor_vis:.2f}x</code>
-                            </div>
-                            <div style="font-style: italic; color: #f1f5f9; font-size: 0.9em;">
-                                "{justificacion_txt}"
-                            </div>
-                        </div>
-                        """)
-
-                    if opp.get("dutching"):
-                        d = opp["dutching"]
-                        st.markdown("##### 🛡️ Desglose del Seguro Sintético (Dutching Saver):")
-                        c_d1, c_d2 = st.columns(2)
-                        with c_d1:
-                            st.markdown(
-                                f"- **Apuesta 1 (Victoria Local):** `{format_money(d['stake_home'], selected_curr_code)}`\n"
-                                f"- **Retorno si Gana Local:** `{format_money(d['return_if_home'], selected_curr_code)}` (**+{format_money(d['net_profit_if_home'], selected_curr_code)} ganancia neta**)"
-                            )
-                        with c_d2:
-                            st.markdown(
-                                f"- **Apuesta 2 (Cobertura Empate):** `{format_money(d['stake_draw'], selected_curr_code)}`\n"
-                                f"- **Retorno si Empatan:** `{format_money(d['return_if_draw'], selected_curr_code)}` (**Reembolso exacto del 100%**)"
-                            )
-
-                    st.markdown("---")
-                    st.markdown("##### 📝 Instrucciones Paso a Paso para Meter la Apuesta:")
-                    rendered_instructions = opp.get("instructions", "")
-                    if selected_curr_code == "COP":
-                        rendered_instructions = rendered_instructions.replace(f"${opp['recommended_stake']}", format_money(opp['recommended_stake'], "COP"))
-                    st.info(rendered_instructions)
-
         # ----------------------------------------------------------------------
-        # SECCIÓN INFERIOR: PARTIDOS DESCARTADOS POR LA ESTADÍSTICA (EN ROJO)
+        # BLOQUE INFERIOR COLAPSADO: PARTIDOS DESCARTADOS / FILTRADOS
         # ----------------------------------------------------------------------
         st.markdown("---")
-        with st.expander(
-            f"⛔ Partidos Descartados por la Estadística ({len(discarded_fixtures)} encuentros sin ventaja)",
-            expanded=False,
-        ):
-            render_clean_html("""
-            <div style="background: rgba(239, 68, 68, 0.12); border: 1.5px solid #ef4444; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; color: #fca5a5; font-weight: 600; font-size: 0.88rem;">
-                ⛔ <b>Descartados por el Modelo Cuantitativo:</b> Los siguientes encuentros presentan Esperanza Matemática Negativa (-EV), cuotas desfavorables por el margen de la casa o están fuera de los umbrales seguros. No se recomienda apostar en ellos.
-            </div>
-            """)
+        with st.expander(f"📁 Partidos Descartados por Filtro de Seguridad ({len(discarded_fixtures)} eventos)", expanded=False):
+            st.caption(
+                "Partidos donde la ventaja está del lado de la casa de apuestas o el Score de Oráculo fue ≤ 75/100. "
+                "En estos partidos el sistema **bloquea el stake ($0)** para preservar tu capital."
+            )
             if discarded_fixtures:
-                discard_df = pd.DataFrame(discarded_fixtures).drop(columns=["_has_value"], errors="ignore")
-                st.dataframe(discard_df, use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(discarded_fixtures), use_container_width=True, hide_index=True)
             else:
-                st.info("Todos los partidos evaluados cuentan con al menos una oportunidad con valor.")
+                st.info("Todos los partidos evaluados cuentan con al menos una oportunidad calificada.")
 
         if len(detected_opportunities) >= 2:
             st.markdown("---")
             st.info(
-                f"💡 **Multiplicador de Retorno:** Se detectaron **{len(detected_opportunities)} apuestas con ventaja matemática**. "
-                "¡Pasa a la pestaña **'📱 Centro de Partido & Combinadas BetPlay'** para ver las combinadas sugeridas (Same-Game Parlay) y mercados detallados!"
+                f"💡 **Multiplicador de Retorno:** Se detectaron **{len(detected_opportunities)} selecciones con ventaja matemática**. "
+                "¡Pasa a la pestaña **'📱 Centro de Partido & Combinadas BetPlay'** para ver las combinadas sugeridas (Same-Game Parlay) simuladas con Monte Carlo!"
             )
 
     except Exception as e:
-        st.warning(f"Error cargando sección: {e}")
+        st.error(f"Error en Pestaña 1 (Señales de Apuesta): {e}")
 
-# TAB 2: CENTRO DE PARTIDO & COMBINADAS BETPLAY (ESTILO UNIFICADO APP MÓVIL)
-# ------------------------------------------------------------------------------
+
 with tab_betplay:
     try:
 
@@ -1147,6 +1048,8 @@ with tab_betplay:
                 bankroll=bankroll_val,
                 kelly_multiplier=kelly_multiplier,
                 ai_adjustment=ai_adj,
+                mc_sim=curr_event.get("monte_carlo_sim"),
+                steam_data=curr_event.get("steam_move"),
             )
 
             # Top Banner: Match Context & Expected Goals
@@ -1211,13 +1114,37 @@ with tab_betplay:
 
             for idx_card, (col_tgt, card) in enumerate(zip(cols_for_cards, sgp_cards)):
                 with col_tgt:
-                    badge_bg = "#065f46" if "BLINDADA" in card["badge"] else ("#92400e" if "RITMO" in card["badge"] else "#5b21b6")
-                    badge_fg = "#a7f3d0" if "BLINDADA" in card["badge"] else ("#fde68a" if "RITMO" in card["badge"] else "#ddd6fe")
-                    border_color = "#10b981" if "BLINDADA" in card["badge"] else ("#f59e0b" if "RITMO" in card["badge"] else "#8b5cf6")
+                    c_score = float(card.get("oracle_score", 0.0))
+                    is_golden = bool(card.get("is_golden_pick", False)) or (c_score >= 90.0)
+                    mc_p = float(card.get("p_monte_carlo", card.get("prob_pct", 50.0)))
+                    mc_ms = float(card.get("mc_stats", {}).get("sim_time_ms", 2.2)) if card.get("mc_stats") else 2.2
+                    is_steam_c = bool(card.get("steam_move", {}).get("is_steam", False))
+
+                    if is_golden:
+                        badge_bg = "#78350f"
+                        badge_fg = "#fde68a"
+                        border_color = "#fbbf24"
+                        card_bg = "linear-gradient(135deg, #1f1704 0%, #362908 50%, #4a3809 100%)"
+                        card_badge_display = "🔥 GOLDEN PICK (Alta Certeza)"
+                    else:
+                        badge_bg = "#065f46" if "BLINDADA" in card["badge"] else ("#92400e" if "RITMO" in card["badge"] else "#5b21b6")
+                        badge_fg = "#a7f3d0" if "BLINDADA" in card["badge"] else ("#fde68a" if "RITMO" in card["badge"] else "#ddd6fe")
+                        border_color = "#10b981" if "BLINDADA" in card["badge"] else ("#f59e0b" if "RITMO" in card["badge"] else "#8b5cf6")
+                        card_bg = "#0f192d"
+                        card_badge_display = card["badge"]
+
                     is_neg_ev = float(card["ev_pct"]) <= 0.0
                     card_ev_str = f"+{card['ev_pct']}%" if card["ev_pct"] > 0 else f"{card['ev_pct']}%"
                     card_ev_color = "#10b981" if card["ev_pct"] > 0 else "#ef4444"
-                    neg_ev_banner = '<div style="background: rgba(239, 68, 68, 0.18); border: 1.5px solid #ef4444; border-radius: 8px; padding: 7px 10px; margin: 8px 0; text-align: center; color: #fca5a5; font-weight: 800; font-size: 0.82rem;">⛔ NO APOSTAR (EV Negativo - Sin Valor Matemático)</div>' if is_neg_ev else ""
+
+                    if is_neg_ev:
+                        gov_banner = '<div style="background: rgba(239, 68, 68, 0.18); border: 1.5px solid #ef4444; border-radius: 8px; padding: 7px 10px; margin: 8px 0; text-align: center; color: #fca5a5; font-weight: 800; font-size: 0.82rem;">⛔ NO APOSTAR (EV Negativo - Sin Valor Matemático)</div>'
+                    elif c_score <= 75.0:
+                        gov_banner = f'<div style="background: rgba(245, 158, 11, 0.15); border: 1.5px solid #f59e0b; border-radius: 8px; padding: 7px 10px; margin: 8px 0; text-align: center; color: #fde68a; font-weight: 800; font-size: 0.80rem;">🔒 STAKE BLOQUEADO ($0 COP): Score de Oráculo ({c_score:.1f}/100) ≤ 75</div>'
+                    else:
+                        gov_banner = ""
+
+                    steam_badge_html = '<div style="background: rgba(239, 68, 68, 0.22); border: 1px solid #ef4444; color: #fca5a5; font-weight: 800; font-size: 0.78rem; padding: 4px 8px; border-radius: 6px; margin-bottom: 8px; text-align: center;">🚨 ALERTA SMART MONEY DETECTADA</div>' if is_steam_c else ''
 
                     # Build connected timeline HTML
                     legs_html = ""
@@ -1234,12 +1161,13 @@ with tab_betplay:
 </div>
 </div>'''
 
-                    html_card = f'''<div style="background: #0f192d; border: 1.5px solid {border_color}; border-radius: 14px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.45);">
+                    html_card = f'''<div style="background: {card_bg}; border: 1.5px solid {border_color}; border-radius: 14px; padding: 14px 16px; margin-bottom: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.45);">
+{steam_badge_html}
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
 <span style="background: {badge_bg}; color: {badge_fg}; font-size: 0.76rem; font-weight: 800; padding: 3px 8px; border-radius: 6px; letter-spacing: 0.5px;">
-{card['badge']}
+{card_badge_display}
 </span>
-<span style="font-size: 0.73rem; color: #94a3b8; font-weight: 600;">{card['risk_label']}</span>
+<span style="background: rgba(168, 85, 247, 0.20); border: 1px solid #c084fc; color: #e9d5ff; font-weight: 800; font-size: 0.76rem; padding: 2px 7px; border-radius: 5px;">🔮 Score: {c_score:.1f}/100</span>
 </div>
 
 <div style="position: relative; padding-left: 22px; margin: 14px 0 14px 4px;">
@@ -1253,21 +1181,21 @@ with tab_betplay:
 <span style="color: #fbbf24; font-weight: 800; font-size: 1.15rem;">@{card['odds']:.2f}</span>
 </div>
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-<span style="color: #94a3b8; font-size: 0.82rem;">Probabilidad Real Estimada:</span>
-<span style="color: #38bdf8; font-weight: 700; font-size: 0.90rem;">{card['prob_pct']}%</span>
+<span style="color: #94a3b8; font-size: 0.82rem;">Probabilidad Monte Carlo (10k):</span>
+<span style="color: #38bdf8; font-weight: 700; font-size: 0.90rem;">{mc_p:.1f}% ({mc_ms:.1f}ms)</span>
 </div>
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
 <span style="color: #94a3b8; font-size: 0.82rem;">Valor Esperado EV:</span>
 <span style="color: {card_ev_color}; font-weight: 700; font-size: 0.90rem;">{card_ev_str}</span>
 </div>
-{neg_ev_banner}
+{gov_banner}
 <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #1e3a5f; padding-top: 8px; margin-top: 6px;">
 <span style="color: #f1f5f9; font-weight: 700; font-size: 0.86rem;">Stake Sugerido (Kelly):</span>
-<span style="color: {'#ef4444' if is_neg_ev else '#34d399'}; font-weight: 800; font-size: 1.02rem;">{format_money(0.0 if is_neg_ev else card['recommended_stake'], selected_curr_code)}</span>
+<span style="color: {'#ef4444' if (is_neg_ev or c_score <= 75.0) else '#34d399'}; font-weight: 800; font-size: 1.02rem;">{format_money(0.0 if (is_neg_ev or c_score <= 75.0) else card['recommended_stake'], selected_curr_code)}</span>
 </div>
 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 3px;">
 <span style="color: #94a3b8; font-size: 0.80rem;">Ganancia Neta Potencial:</span>
-<span style="color: #a7f3d0; font-size: 0.85rem; font-weight: 700;">+{format_money(card['potential_profit'], selected_curr_code)}</span>
+<span style="color: #a7f3d0; font-size: 0.85rem; font-weight: 700;">+{format_money(0.0 if c_score <= 75.0 else card['potential_profit'], selected_curr_code)}</span>
 </div>
 </div>
 

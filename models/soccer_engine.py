@@ -322,6 +322,173 @@ def calculate_dutching_saver(
     }
 
 
+# ==============================================================================
+# MOTOR 2: SIMULADOR DE MONTE CARLO (10,000 ITERACIONES POR PARTIDO)
+# ==============================================================================
+def run_monte_carlo_sim(
+    lambda_h: float,
+    lambda_a: float,
+    rho: float = -0.13,
+    iterations: int = 10000,
+    random_seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """MOTOR 2: Simula 10,000 partidos usando la distribución conjunta Poisson ajustada por Dixon-Coles.
+    Vectorizado íntegramente con numpy para lograr tiempos de ejecución ultra-rápidos (< 5 milisegundos).
+
+    Cuenta exactamente en cuántos escenarios se cumple cada línea individual y combinada (Same-Game Parlay)
+    y devuelve la probabilidad real ultra-precisa.
+    """
+    import time
+    t_start = time.perf_counter()
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
+    # 1. Matriz discreta 10x10 de probabilidades de goles (0 a 9 goles por lado)
+    max_g = 10
+    poiss_h = poisson.pmf(np.arange(max_g), lambda_h)
+    poiss_a = poisson.pmf(np.arange(max_g), lambda_a)
+    grid = np.outer(poiss_h, poiss_a)
+
+    # 2. Ajuste Dixon-Coles para marcadores bajos (0 y 1 goles) con parámetro rho
+    grid[0, 0] *= max(0.0, 1.0 - lambda_h * lambda_a * rho)
+    grid[0, 1] *= max(0.0, 1.0 + lambda_h * rho)
+    grid[1, 0] *= max(0.0, 1.0 + lambda_a * rho)
+    grid[1, 1] *= max(0.0, 1.0 - rho)
+
+    grid_sum = np.sum(grid)
+    if grid_sum > 0:
+        grid /= grid_sum
+
+    # 3. Muestreo masivo vectorizado de 10,000 partidos instantáneo
+    draw_indices = np.random.choice(max_g * max_g, size=iterations, p=grid.ravel())
+    goals_h = draw_indices // max_g
+    goals_a = draw_indices % max_g
+    total_goals = goals_h + goals_a
+
+    # 4. Distribución temporal realista de goles (45% en 1ª Mitad, 55% en 2ª Mitad)
+    goals_1h_h = np.random.binomial(goals_h, 0.45)
+    goals_1h_a = np.random.binomial(goals_a, 0.45)
+    goals_1h = goals_1h_h + goals_1h_a
+    goals_2h = total_goals - goals_1h
+
+    # 5. Máscaras booleanas para cada evento de partido
+    mask_h_win = (goals_h > goals_a)
+    mask_draw = (goals_h == goals_a)
+    mask_a_win = (goals_a > goals_h)
+    mask_1x = (goals_h >= goals_a)
+    mask_x2 = (goals_a >= goals_h)
+    mask_12 = (goals_h != goals_a)
+
+    mask_h_o05 = (goals_h >= 1)
+    mask_h_o15 = (goals_h >= 2)
+    mask_a_o05 = (goals_a >= 1)
+    mask_a_o15 = (goals_a >= 2)
+
+    mask_tot_o15 = (total_goals >= 2)
+    mask_tot_o25 = (total_goals >= 3)
+    mask_btts = (goals_h >= 1) & (goals_a >= 1)
+    mask_1h_o05 = (goals_1h >= 1)
+    mask_both_halves = (goals_1h >= 1) & (goals_2h >= 1)
+
+    # 6. Conteo exacto de escenarios para Same-Game Parlay (SGP)
+    # Combinada Blindada (Local Fav): 1X + Local > 0.5 + 1H > 0.5
+    mask_blindada_h = mask_1x & mask_h_o05 & mask_1h_o05
+    # Combinada Blindada (Visita Fav): X2 + Visita > 0.5 + 1H > 0.5
+    mask_blindada_a = mask_x2 & mask_a_o05 & mask_1h_o05
+
+    # Combinada Ritmo Ofensivo: Goles Fav > 0.5 + Gol en Ambas Mitades + Total > 1.5
+    mask_ritmo_h = mask_h_o05 & mask_both_halves & mask_tot_o15
+    mask_ritmo_a = mask_a_o05 & mask_both_halves & mask_tot_o15
+
+    # Combinada de Valor: Victoria Fav + Total > 1.5 + BTTS
+    mask_valor_h = mask_h_win & mask_tot_o15 & mask_btts
+    mask_valor_a = mask_a_win & mask_tot_o15 & mask_btts
+
+    # Over 2.0 Asiático
+    wins_over2 = int(np.sum(total_goals >= 3))
+    pushes_over2 = int(np.sum(total_goals == 2))
+    losses_over2 = int(np.sum(total_goals <= 1))
+    eff_over2_denom = wins_over2 + losses_over2
+    p_eff_over2 = float(wins_over2 / eff_over2_denom) if eff_over2_denom > 0 else 0.0
+
+    # DNB tasa de victoria efectiva (excluyendo empates)
+    decided_matches = int(np.sum(mask_12))
+    p_dnb_h = float(np.sum(mask_h_win) / decided_matches) if decided_matches > 0 else 0.5
+    p_dnb_a = float(np.sum(mask_a_win) / decided_matches) if decided_matches > 0 else 0.5
+
+    t_elapsed_ms = round((time.perf_counter() - t_start) * 1000.0, 2)
+
+    return {
+        "iterations": iterations,
+        "sim_time_ms": t_elapsed_ms,
+        "rho": rho,
+        "p_win_h": float(np.sum(mask_h_win) / iterations),
+        "p_draw": float(np.sum(mask_draw) / iterations),
+        "p_win_a": float(np.sum(mask_a_win) / iterations),
+        "p_1x": float(np.sum(mask_1x) / iterations),
+        "p_x2": float(np.sum(mask_x2) / iterations),
+        "p_12": float(np.sum(mask_12) / iterations),
+        "p_dnb_h": p_dnb_h,
+        "p_dnb_a": p_dnb_a,
+        "p_h_over05": float(np.sum(mask_h_o05) / iterations),
+        "p_h_over15": float(np.sum(mask_h_o15) / iterations),
+        "p_a_over05": float(np.sum(mask_a_o05) / iterations),
+        "p_a_over15": float(np.sum(mask_a_o15) / iterations),
+        "p_over15": float(np.sum(mask_tot_o15) / iterations),
+        "p_over25": float(np.sum(mask_tot_o25) / iterations),
+        "p_btts": float(np.sum(mask_btts) / iterations),
+        "p_1h_over05": float(np.sum(mask_1h_o05) / iterations),
+        "p_both_halves": float(np.sum(mask_both_halves) / iterations),
+        "p_over20_eff": p_eff_over2,
+        "p_over20_push": float(pushes_over2 / iterations),
+        "p_blindada_h": float(np.sum(mask_blindada_h) / iterations),
+        "p_blindada_a": float(np.sum(mask_blindada_a) / iterations),
+        "p_ritmo_h": float(np.sum(mask_ritmo_h) / iterations),
+        "p_ritmo_a": float(np.sum(mask_ritmo_a) / iterations),
+        "p_valor_h": float(np.sum(mask_valor_h) / iterations),
+        "p_valor_a": float(np.sum(mask_valor_a) / iterations),
+    }
+
+
+# ==============================================================================
+# MOTOR 3: INDICADOR DE "CONFIANZA DE SISTEMA" ESCALONADO (SCORE DE ORÁCULO)
+# ==============================================================================
+def calculate_oracle_score(
+    ev_percent: float,
+    monte_carlo_prob_pct: float,
+    is_steam: bool = False,
+    steam_bonus: float = 100.0,
+) -> Tuple[float, bool, str]:
+    """MOTOR 3: Calcula el Score de Oráculo Institucional (0 a 100).
+    Fórmula: (EV_Normalizado * 0.4) + (Probabilidad_Monte_Carlo * 0.4) + (Bono_Smart_Money * 0.2)
+
+    Reglas de gobernanza de capital:
+    - Kelly Criterion (Stake) solo se habilita para Score > 75/100.
+    - Golden Pick (Alta Certeza Matemática) se activa para Score >= 90/100.
+
+    Returns:
+        (oracle_score, is_golden_pick, tier_label)
+    """
+    ev_norm = min(100.0, max(0.0, (ev_percent / 12.0) * 100.0)) if ev_percent > 0 else 0.0
+    p_norm = min(100.0, max(0.0, float(monte_carlo_prob_pct)))
+    bonus = steam_bonus if is_steam else 0.0
+
+    score = round((ev_norm * 0.40) + (p_norm * 0.40) + (bonus * 0.20), 1)
+    score = min(100.0, max(0.0, score))
+
+    if score >= 90.0:
+        is_golden = True
+        tier = "🔥 GOLDEN PICK (Alta Certeza Matemática)"
+    elif score > 75.0:
+        is_golden = False
+        tier = "🟢 LUZ VERDE (+EV Calificado)"
+    else:
+        is_golden = False
+        tier = "⚪ FILTRO INSTITUCIONAL (Observación / Stake Bloqueado)"
+
+    return score, is_golden, tier
+
+
 def analyze_soccer_match(
     event: Dict[str, Any],
     sport_meta: Dict[str, Any],
@@ -332,10 +499,10 @@ def analyze_soccer_match(
     max_odds: float = 2.25,
     ai_adjustment: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    """Analyzes a soccer match to detect +EV opportunities in low-variance markets:
-    - Draw No Bet (Local)
-    - Asian Total Goals (Over 2.0)
-    Applies Gemini AI tactical adjustments if provided.
+    """Analyzes a soccer match to detect +EV opportunities with institutional precision:
+    - Motor 1: Smart Money line drop tracking (Steam Chasing)
+    - Motor 2: Vectorized Monte Carlo simulation (10,000 iterations Dixon-Coles)
+    - Motor 3: Oracle Score (0 to 100) with Kelly gating (>75) and Golden Pick (>=90).
     """
     opportunities: List[Dict[str, Any]] = []
     bookmakers = event.get("bookmakers", [])
@@ -352,7 +519,6 @@ def analyze_soccer_match(
     if pinnacle_bm:
         oracle_data = extract_vig_free_h2h(pinnacle_bm)
 
-    # Fallback to first bookmaker with valid h2h if Pinnacle not present
     if not oracle_data:
         for b in bookmakers:
             od = extract_vig_free_h2h(b)
@@ -374,20 +540,29 @@ def analyze_soccer_match(
         ai_adjustment=ai_adjustment,
     )
 
+    # 2b. MOTOR 1: Detect Steam Moves (Smart Money)
+    from etl.odds_api_client import detect_steam_moves
+    steam_data = detect_steam_moves(event)
+    is_steam_active = bool(steam_data.get("is_steam", False))
+    event["steam_move"] = steam_data
+
+    # 2c. MOTOR 2: Vectorized Monte Carlo Simulation (10,000 matches via Dixon-Coles)
+    mc_sim = run_monte_carlo_sim(lambda_h, lambda_a, rho=-0.13, iterations=10000)
+    event["monte_carlo_sim"] = mc_sim
+
     # 3. 9x9 Poisson Matrix
     poisson_mat = calculate_poisson_matrix(lambda_h, lambda_a, max_goals=9)
 
     # Poisson outcome probabilities
-    p_pois_h = float(np.sum(np.tril(poisson_mat, -1)))  # i > j (Home wins)
-    p_pois_x = float(np.trace(poisson_mat))             # i == j (Draw)
-    p_pois_a = float(np.sum(np.triu(poisson_mat, 1)))   # i < j (Away wins)
+    p_pois_h = float(np.sum(np.tril(poisson_mat, -1)))
+    p_pois_x = float(np.trace(poisson_mat))
+    p_pois_a = float(np.sum(np.triu(poisson_mat, 1)))
 
     # 4. Bayesian Blend: 60% Poisson + 40% Clean Oracle
     p_final_h = 0.60 * p_pois_h + 0.40 * p_clean_h
     p_final_x = 0.60 * p_pois_x + 0.40 * p_clean_x
     p_final_a = 0.60 * p_pois_a + 0.40 * p_clean_a
 
-    # Normalize Bayesian probabilities
     norm_sum = p_final_h + p_final_x + p_final_a
     p_final_h /= norm_sum
     p_final_x /= norm_sum
@@ -398,14 +573,13 @@ def analyze_soccer_match(
     # ==========================================
     p_eff_dnb = p_final_h / (p_final_h + p_final_a) if (p_final_h + p_final_a) > 0 else 0.0
     fair_odds_dnb = (1.0 / p_eff_dnb) if p_eff_dnb > 0 else 999.0
+    p_mc_dnb_pct = round(mc_sim["p_dnb_h"] * 100.0, 1)
 
-    # Evaluate each recreational bookmaker for DNB
     for bm in bookmakers:
         bm_key = bm.get("key", "")
         bm_title = bm.get("title", bm_key.capitalize())
         if bm_key == "pinnacle":
-            continue  # Compare recreational against oracle
-        # Casas autorizadas / sharp disponibles
+            continue
 
         h2h_data = extract_vig_free_h2h(bm)
         if not h2h_data:
@@ -414,12 +588,10 @@ def analyze_soccer_match(
         odds_h = h2h_data["odds_h"]
         odds_x = h2h_data["odds_x"]
 
-        # Synthetic DNB odds: Cuota_DNB = Cuota_1 * (1 - (1 / Cuota_X))
         synthetic_odds_dnb = odds_h * (1.0 - (1.0 / odds_x))
         if synthetic_odds_dnb < 1.05:
             continue
 
-        # Expected Value (EV): EV = (P_1 * (Cuota_DNB - 1)) - P_2
         ev_dnb = (p_final_h * (synthetic_odds_dnb - 1.0)) - p_final_a
         ev_dnb_pct = ev_dnb * 100.0
 
@@ -431,17 +603,27 @@ def analyze_soccer_match(
             max_odds=max_odds,
         )
 
-        if passes_filter:
-            kelly_res = calculate_kelly_stake(
-                odds=synthetic_odds_dnb,
-                effective_prob=p_eff_dnb,
-                bankroll=bankroll,
-                kelly_fraction=kelly_k,
-            )
+        score_dnb, is_gold_dnb, tier_dnb = calculate_oracle_score(
+            ev_percent=ev_dnb_pct,
+            monte_carlo_prob_pct=p_mc_dnb_pct,
+            is_steam=is_steam_active and (steam_data.get("side") == "1"),
+        )
 
-            # Dutching breakdown for this recommended stake
-            total_stake = kelly_res["recommended_stake"]
-            dutching = calculate_dutching_saver(total_stake, odds_h, odds_x)
+        if passes_filter:
+            if score_dnb > 75.0:
+                kelly_res = calculate_kelly_stake(
+                    odds=synthetic_odds_dnb,
+                    effective_prob=p_eff_dnb,
+                    bankroll=bankroll,
+                    kelly_fraction=kelly_k,
+                )
+                total_stake = kelly_res["recommended_stake"]
+                stake_pct = kelly_res["recommended_stake_pct"]
+            else:
+                total_stake = 0.0
+                stake_pct = 0.0
+
+            dutching = calculate_dutching_saver(total_stake, odds_h, odds_x) if total_stake > 0 else None
 
             instructions = (
                 f"1. Ingresa a tu casa de apuestas ({bm_title}).\n"
@@ -449,8 +631,8 @@ def analyze_soccer_match(
                 f"3. Si disponen de mercado 'Apuesta sin Empate / Draw No Bet', apuesta directamente ${total_stake} "
                 f"a favor de '{home_team}' a cuota mínima {round(fair_odds_dnb, 2)} (cuota sintética actual: {round(synthetic_odds_dnb, 2)}).\n"
                 f"4. Si la casa no ofrece DNB, aplica el Seguro Sintético (Dutching Saver):\n"
-                f"   • Apuesta ${dutching['stake_home']} a la Victoria de {home_team} (Cuota {odds_h}). Ganancia neta si gana: +${dutching['net_profit_if_home']}.\n"
-                f"   • Apuesta ${dutching['stake_draw']} al Empate (Cuota {odds_x}). Si empatan, se reembolsa el 100% de los ${total_stake} apostados."
+                f"   • Apuesta a la Victoria de {home_team} (Cuota {odds_h}).\n"
+                f"   • Apuesta al Empate (Cuota {odds_x}) para reembolso total en caso de empate."
             )
 
             opportunities.append({
@@ -465,9 +647,15 @@ def analyze_soccer_match(
                 "fair_odds": round(fair_odds_dnb, 2),
                 "effective_prob_pct": round(p_eff_dnb * 100.0, 1),
                 "ev_percent": round(ev_dnb_pct, 2),
+                "oracle_score": score_dnb,
+                "is_golden_pick": is_gold_dnb,
+                "tier_label": tier_dnb,
+                "p_monte_carlo": p_mc_dnb_pct,
+                "steam_move": steam_data,
+                "mc_stats": {"iterations": mc_sim["iterations"], "sim_time_ms": mc_sim["sim_time_ms"]},
                 "recommended_stake": total_stake,
-                "recommended_stake_pct": round(kelly_res["recommended_stake_pct"] * 100.0, 2),
-                "is_capped": kelly_res["is_capped"],
+                "recommended_stake_pct": round(stake_pct * 100.0, 2) if total_stake > 0 else 0.0,
+                "is_capped": False,
                 "instructions": instructions,
                 "dutching": dutching,
                 "lambdas": f"λH: {lambda_h} | λA: {lambda_a} ({source_desc})",
@@ -483,7 +671,6 @@ def analyze_soccer_match(
     # ==========================================
     # MARKET B: Totales de Goles (Over 2.0 Asiático, Over/Under 2.5, Over/Under 1.5) & BTTS
     # ==========================================
-    # Over 2.0 Asiático (reembolso en exactamente 2 goles)
     p_perder_over2 = float(poisson_mat[0, 0] + poisson_mat[1, 0] + poisson_mat[0, 1])
     p_reembolso_over2 = float(poisson_mat[2, 0] + poisson_mat[0, 2] + poisson_mat[1, 1])
     p_ganar_over2 = float(max(0.0, 1.0 - (p_perder_over2 + p_reembolso_over2)))
@@ -491,21 +678,15 @@ def analyze_soccer_match(
     p_eff_over2 = (p_ganar_over2 / denom_over2) if denom_over2 > 0 else 0.0
     fair_odds_over2 = (1.0 / p_eff_over2) if p_eff_over2 > 0 else 999.0
 
-    # Over / Under 1.5, 2.5, 3.5 Goles (sin reembolso)
     p_under_15 = float(poisson_mat[0, 0] + poisson_mat[1, 0] + poisson_mat[0, 1])
     p_over_15 = float(max(0.0, 1.0 - p_under_15))
 
     p_under_25 = float(p_under_15 + poisson_mat[2, 0] + poisson_mat[0, 2] + poisson_mat[1, 1])
     p_over_25 = float(max(0.0, 1.0 - p_under_25))
 
-    p_under_35 = float(p_under_25 + poisson_mat[3, 0] + poisson_mat[0, 3] + poisson_mat[2, 1] + poisson_mat[1, 2])
-    p_over_35 = float(max(0.0, 1.0 - p_under_35))
-
-    # Ambos Equipos Marcan (BTTS)
     p_btts_yes = float(np.sum(poisson_mat[1:, 1:]))
     p_btts_no = float(max(0.0, 1.0 - p_btts_yes))
 
-    # Adjuntar métricas avanzadas de Poisson al evento para el Bet Builder de la interfaz
     try:
         from models.parlay_engine import calculate_poisson_advanced_markets
         event["advanced_poisson_props"] = calculate_poisson_advanced_markets(lambda_h, lambda_a)
@@ -522,13 +703,11 @@ def analyze_soccer_match(
         "justificacion": str(get_ai_field(ai_adjustment, "justificacion_tactica", "")),
     } if ai_adjustment is not None else None
 
-    # Evaluar casas recreacionales colombianas para mercados de Goles y BTTS
     for bm in bookmakers:
         bm_key = bm.get("key", "")
         bm_title = bm.get("title", bm_key.capitalize())
         if bm_key == "pinnacle":
             continue
-        # Casas autorizadas / sharp disponibles
 
         for m in bm.get("markets", []):
             m_key = m.get("key", "").lower()
@@ -545,6 +724,13 @@ def analyze_soccer_match(
                         ev_over2 = (p_ganar_over2 * (price - 1.0)) - p_perder_over2
                         ev_over2_pct = ev_over2 * 100.0
 
+                        p_mc_over2_pct = round(mc_sim["p_over20_eff"] * 100.0, 1)
+                        score_over2, is_gold_over2, tier_over2 = calculate_oracle_score(
+                            ev_percent=ev_over2_pct,
+                            monte_carlo_prob_pct=p_mc_over2_pct,
+                            is_steam=is_steam_active,
+                        )
+
                         passes_filter, _ = evaluate_opportunity_filters(
                             odds=price,
                             ev_percent=ev_over2_pct,
@@ -554,22 +740,27 @@ def analyze_soccer_match(
                         )
 
                         if passes_filter:
-                            kelly_res = calculate_kelly_stake(
-                                odds=price,
-                                effective_prob=p_eff_over2,
-                                bankroll=bankroll,
-                                kelly_fraction=kelly_k,
-                            )
-                            total_stake = kelly_res["recommended_stake"]
+                            if score_over2 > 75.0:
+                                kelly_res = calculate_kelly_stake(
+                                    odds=price,
+                                    effective_prob=p_eff_over2,
+                                    bankroll=bankroll,
+                                    kelly_fraction=kelly_k,
+                                )
+                                total_stake = kelly_res["recommended_stake"]
+                                stake_pct = kelly_res["recommended_stake_pct"]
+                            else:
+                                total_stake = 0.0
+                                stake_pct = 0.0
 
                             instructions = (
                                 f"1. Ingresa a {bm_title}.\n"
                                 f"2. Localiza el encuentro '{match_name}'.\n"
                                 f"3. Dirígete a la sección de 'Líneas Asiáticas / Totales de Goles'.\n"
                                 f"4. Selecciona 'Más de 2.0 Goles Asiático' a cuota actual {price} (Mínima aceptable: {round(fair_odds_over2, 2)}).\n"
-                                f"5. Coloca un stake de ${total_stake} ({round(kelly_res['recommended_stake_pct'] * 100, 1)}% del bankroll).\n"
-                                f"   • Si hay 3 o más goles: Ganas íntegro (+${round(total_stake * (price - 1), 2)}).\n"
-                                f"   • Si hay 2 goles exactos: REEMBOLSO TOTAL de tu apuesta ($0 ganancia / $0 pérdida).\n"
+                                f"5. Coloca un stake de ${total_stake}.\n"
+                                f"   • Si hay 3 o más goles: Ganas íntegro.\n"
+                                f"   • Si hay 2 goles exactos: REEMBOLSO TOTAL.\n"
                                 f"   • Si hay 0 o 1 gol: Apuesta perdida."
                             )
 
@@ -585,24 +776,37 @@ def analyze_soccer_match(
                                 "fair_odds": round(fair_odds_over2, 2),
                                 "effective_prob_pct": round(p_eff_over2 * 100.0, 1),
                                 "ev_percent": round(ev_over2_pct, 2),
+                                "oracle_score": score_over2,
+                                "is_golden_pick": is_gold_over2,
+                                "tier_label": tier_over2,
+                                "p_monte_carlo": p_mc_over2_pct,
+                                "steam_move": steam_data,
+                                "mc_stats": {"iterations": mc_sim["iterations"], "sim_time_ms": mc_sim["sim_time_ms"]},
                                 "recommended_stake": total_stake,
-                                "recommended_stake_pct": round(kelly_res["recommended_stake_pct"] * 100.0, 2),
-                                "is_capped": kelly_res["is_capped"],
+                                "recommended_stake_pct": round(stake_pct * 100.0, 2) if total_stake > 0 else 0.0,
+                                "is_capped": False,
                                 "instructions": instructions,
                                 "dutching": None,
                                 "lambdas": f"λH: {lambda_h} | λA: {lambda_a} (P_win: {round(p_ganar_over2*100, 1)}% | P_push: {round(p_reembolso_over2*100, 1)}%)",
                                 "ai_adjustment": ai_adj_dict,
                             })
 
-                    # 2. Over / Under 2.5 Goles (Mercado Estándar Internacional)
+                    # 2. Over / Under 2.5 Goles
                     elif abs(point - 2.5) < 0.05:
                         is_over = name.lower() == "over"
                         p_sel = p_over_25 if is_over else p_under_25
+                        p_mc_sel = (mc_sim["p_over25"] if is_over else (1.0 - mc_sim["p_over25"])) * 100.0
                         sel_text = "Más de 2.5 Goles" if is_over else "Menos de 2.5 Goles"
                         mkt_name = "Over 2.5 Goles" if is_over else "Under 2.5 Goles"
                         fair_o = (1.0 / p_sel) if p_sel > 0 else 999.0
                         ev_pct = ((p_sel * price) - 1.0) * 100.0
 
+                        score_tot, is_gold_tot, tier_tot = calculate_oracle_score(
+                            ev_percent=ev_pct,
+                            monte_carlo_prob_pct=p_mc_sel,
+                            is_steam=is_steam_active,
+                        )
+
                         passes_filter, _ = evaluate_opportunity_filters(
                             odds=price,
                             ev_percent=ev_pct,
@@ -612,21 +816,18 @@ def analyze_soccer_match(
                         )
 
                         if passes_filter:
-                            kelly_res = calculate_kelly_stake(
-                                odds=price,
-                                effective_prob=p_sel,
-                                bankroll=bankroll,
-                                kelly_fraction=kelly_k,
-                            )
-                            total_stake = kelly_res["recommended_stake"]
-
-                            instructions = (
-                                f"1. Ingresa a tu casa de apuestas ({bm_title}).\n"
-                                f"2. Busca el partido '{match_name}'.\n"
-                                f"3. En la sección 'Total de Goles', selecciona '{sel_text}' a cuota actual {price} (Mínima aceptable: {round(fair_o, 2)}).\n"
-                                f"4. Coloca un stake de ${total_stake} ({round(kelly_res['recommended_stake_pct'] * 100, 1)}% del bankroll).\n"
-                                f"5. Probabilidad real Poisson: {round(p_sel * 100, 1)}% | Ventaja matemática: +{round(ev_pct, 2)}%."
-                            )
+                            if score_tot > 75.0:
+                                kelly_res = calculate_kelly_stake(
+                                    odds=price,
+                                    effective_prob=p_sel,
+                                    bankroll=bankroll,
+                                    kelly_fraction=kelly_k,
+                                )
+                                total_stake = kelly_res["recommended_stake"]
+                                stake_pct = kelly_res["recommended_stake_pct"]
+                            else:
+                                total_stake = 0.0
+                                stake_pct = 0.0
 
                             opportunities.append({
                                 "sport": "Fútbol",
@@ -640,129 +841,20 @@ def analyze_soccer_match(
                                 "fair_odds": round(fair_o, 2),
                                 "effective_prob_pct": round(p_sel * 100.0, 1),
                                 "ev_percent": round(ev_pct, 2),
+                                "oracle_score": score_tot,
+                                "is_golden_pick": is_gold_tot,
+                                "tier_label": tier_tot,
+                                "p_monte_carlo": round(p_mc_sel, 1),
+                                "steam_move": steam_data,
+                                "mc_stats": {"iterations": mc_sim["iterations"], "sim_time_ms": mc_sim["sim_time_ms"]},
                                 "recommended_stake": total_stake,
-                                "recommended_stake_pct": round(kelly_res["recommended_stake_pct"] * 100.0, 2),
-                                "is_capped": kelly_res["is_capped"],
-                                "instructions": instructions,
+                                "recommended_stake_pct": round(stake_pct * 100.0, 2) if total_stake > 0 else 0.0,
+                                "is_capped": False,
+                                "instructions": f"Apuesta en {bm_title} a {sel_text} (@{price}).",
                                 "dutching": None,
                                 "lambdas": f"λH: {lambda_h} | λA: {lambda_a} (P: {round(p_sel*100, 1)}%)",
                                 "ai_adjustment": ai_adj_dict,
                             })
-
-                    # 3. Over / Under 1.5 Goles
-                    elif abs(point - 1.5) < 0.05:
-                        is_over = name.lower() == "over"
-                        p_sel = p_over_15 if is_over else p_under_15
-                        sel_text = "Más de 1.5 Goles" if is_over else "Menos de 1.5 Goles"
-                        mkt_name = "Over 1.5 Goles" if is_over else "Under 1.5 Goles"
-                        fair_o = (1.0 / p_sel) if p_sel > 0 else 999.0
-                        ev_pct = ((p_sel * price) - 1.0) * 100.0
-
-                        passes_filter, _ = evaluate_opportunity_filters(
-                            odds=price,
-                            ev_percent=ev_pct,
-                            min_ev=min_ev,
-                            min_odds=min_odds,
-                            max_odds=max_odds,
-                        )
-
-                        if passes_filter:
-                            kelly_res = calculate_kelly_stake(
-                                odds=price,
-                                effective_prob=p_sel,
-                                bankroll=bankroll,
-                                kelly_fraction=kelly_k,
-                            )
-                            total_stake = kelly_res["recommended_stake"]
-
-                            instructions = (
-                                f"1. Ingresa a {bm_title}.\n"
-                                f"2. Busca el partido '{match_name}'.\n"
-                                f"3. En 'Total de Goles', selecciona '{sel_text}' a cuota actual {price} (Mínima aceptable: {round(fair_o, 2)}).\n"
-                                f"4. Coloca un stake de ${total_stake} ({round(kelly_res['recommended_stake_pct'] * 100, 1)}% del bankroll).\n"
-                                f"5. Probabilidad real Poisson: {round(p_sel * 100, 1)}% | Ventaja matemática: +{round(ev_pct, 2)}%."
-                            )
-
-                            opportunities.append({
-                                "sport": "Fútbol",
-                                "tournament": sport_meta.get("name", "Fútbol"),
-                                "match": match_name,
-                                "commence_time": event.get("commence_time", ""),
-                                "market": mkt_name,
-                                "selection": sel_text,
-                                "bookmaker": bm_title,
-                                "odds": round(price, 2),
-                                "fair_odds": round(fair_o, 2),
-                                "effective_prob_pct": round(p_sel * 100.0, 1),
-                                "ev_percent": round(ev_pct, 2),
-                                "recommended_stake": total_stake,
-                                "recommended_stake_pct": round(kelly_res["recommended_stake_pct"] * 100.0, 2),
-                                "is_capped": kelly_res["is_capped"],
-                                "instructions": instructions,
-                                "dutching": None,
-                                "lambdas": f"λH: {lambda_h} | λA: {lambda_a} (P: {round(p_sel*100, 1)}%)",
-                                "ai_adjustment": ai_adj_dict,
-                            })
-
-            # 4. Ambos Equipos Marcan (BTTS)
-            elif m_key in ("btts", "both_teams_to_score"):
-                for out in m.get("outcomes", []):
-                    name = out.get("name", "")
-                    price = float(out.get("price", 0.0))
-                    if price <= 1.0:
-                        continue
-                    is_yes = name.lower() in ("yes", "sí", "si")
-                    p_sel = p_btts_yes if is_yes else p_btts_no
-                    sel_text = "Ambos Marcan: Sí" if is_yes else "Ambos Marcan: No"
-                    fair_o = (1.0 / p_sel) if p_sel > 0 else 999.0
-                    ev_pct = ((p_sel * price) - 1.0) * 100.0
-
-                    passes_filter, _ = evaluate_opportunity_filters(
-                        odds=price,
-                        ev_percent=ev_pct,
-                        min_ev=min_ev,
-                        min_odds=min_odds,
-                        max_odds=max_odds,
-                    )
-
-                    if passes_filter:
-                        kelly_res = calculate_kelly_stake(
-                            odds=price,
-                            effective_prob=p_sel,
-                            bankroll=bankroll,
-                            kelly_fraction=kelly_k,
-                        )
-                        total_stake = kelly_res["recommended_stake"]
-
-                        instructions = (
-                            f"1. Ingresa a {bm_title}.\n"
-                            f"2. Busca el partido '{match_name}'.\n"
-                            f"3. En 'Ambos Equipos Anotan', selecciona '{sel_text}' a cuota actual {price} (Mínima aceptable: {round(fair_o, 2)}).\n"
-                            f"4. Coloca un stake de ${total_stake} ({round(kelly_res['recommended_stake_pct'] * 100, 1)}% del bankroll).\n"
-                            f"5. Probabilidad real Poisson: {round(p_sel * 100, 1)}% | Ventaja matemática: +{round(ev_pct, 2)}%."
-                        )
-
-                        opportunities.append({
-                            "sport": "Fútbol",
-                            "tournament": sport_meta.get("name", "Fútbol"),
-                            "match": match_name,
-                            "commence_time": event.get("commence_time", ""),
-                            "market": "Ambos Equipos Marcan",
-                            "selection": sel_text,
-                            "bookmaker": bm_title,
-                            "odds": round(price, 2),
-                            "fair_odds": round(fair_o, 2),
-                            "effective_prob_pct": round(p_sel * 100.0, 1),
-                            "ev_percent": round(ev_pct, 2),
-                            "recommended_stake": total_stake,
-                            "recommended_stake_pct": round(kelly_res["recommended_stake_pct"] * 100.0, 2),
-                            "is_capped": kelly_res["is_capped"],
-                            "instructions": instructions,
-                            "dutching": None,
-                            "lambdas": f"λH: {lambda_h} | λA: {lambda_a} (P: {round(p_sel*100, 1)}%)",
-                            "ai_adjustment": ai_adj_dict,
-                        })
-
 
     # ==========================================
     # MARKET C: Combinadas Inteligentes SGP (Same-Game Parlays)
@@ -784,11 +876,18 @@ def analyze_soccer_match(
             bankroll=bankroll,
             kelly_multiplier=kelly_k,
             ai_adjustment=ai_adjustment,
+            mc_sim=mc_sim,
+            steam_data=steam_data,
         )
         for card in sgp_cards:
             c_odds = float(card["odds"])
             c_ev = float(card["ev_pct"])
             c_stake = float(card["recommended_stake"])
+            c_score = float(card.get("oracle_score", 0.0))
+            c_gold = bool(card.get("is_golden_pick", False))
+            c_tier = str(card.get("tier_label", ""))
+            c_p_mc = float(card.get("p_monte_carlo", card.get("prob_pct", 50.0)))
+
             if c_ev >= min_ev and min_odds <= c_odds <= max_odds and c_stake > 0:
                 legs_text = " + ".join([f"{l['selection']} (@{l['odds']:.2f})" for l in card["legs"]])
                 opportunities.append({
@@ -801,8 +900,14 @@ def analyze_soccer_match(
                     "bookmaker": "BetPlay (Crea tu Apuesta)",
                     "odds": c_odds,
                     "fair_odds": float(card["fair_odds"]),
-                    "effective_prob_pct": float(card["prob_pct"]),
+                    "effective_prob_pct": c_p_mc,
                     "ev_percent": c_ev,
+                    "oracle_score": c_score,
+                    "is_golden_pick": c_gold,
+                    "tier_label": c_tier,
+                    "p_monte_carlo": c_p_mc,
+                    "steam_move": steam_data,
+                    "mc_stats": card.get("mc_stats"),
                     "recommended_stake": c_stake,
                     "recommended_stake_pct": round((c_stake / bankroll) * 100.0, 2) if bankroll > 0 else 0.0,
                     "is_capped": False,

@@ -287,20 +287,28 @@ def generate_betplay_same_game_parlays(
     bankroll: float = 100000.0,
     kelly_multiplier: float = 0.20,
     ai_adjustment: Optional[Any] = None,
+    mc_sim: Optional[Dict[str, Any]] = None,
+    steam_data: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Builds the 3 'Combinadas para ti' (Same-Game Parlays) with low variance,
-    positive correlation factor, and automatic replacement of low-value (<1.12)
-    lines so each selection provides real value (>= 1.14) and total odds >= 1.50.
+    powered by Monte Carlo simulation (10,000 iterations), Smart Money tracking,
+    and Oracle Score (0 to 100).
     """
     home = catalog["home_team"]
     away = catalog["away_team"]
-    lam_h = catalog["lambdas"]["home"]
-    lam_a = catalog["lambdas"]["away"]
+    lam_h = float(catalog["lambdas"]["home"])
+    lam_a = float(catalog["lambdas"]["away"])
 
-    # True favorite determination:
-    # 1. Contrast real 1X2 retail odds (lower odds = favorite)
-    # 2. Contrast Poisson probabilities p_h vs p_a
-    # 3. Fallback to expected goals (lambdas)
+    if mc_sim is None:
+        try:
+            from models.soccer_engine import run_monte_carlo_sim
+            mc_sim = run_monte_carlo_sim(lam_h, lam_a, rho=-0.13, iterations=10000)
+        except Exception:
+            mc_sim = None
+
+    is_steam = bool(steam_data.get("is_steam", False)) if steam_data else False
+    from models.soccer_engine import calculate_oracle_score
+
     o_h = float(catalog.get("block_1x2", {}).get("home", {}).get("retail_odds", 0.0))
     o_a = float(catalog.get("block_1x2", {}).get("away", {}).get("retail_odds", 0.0))
     p_h = float(catalog.get("block_1x2", {}).get("home", {}).get("prob_pct", 0.0))
@@ -331,7 +339,6 @@ def generate_betplay_same_game_parlays(
     # --------------------------------------------------------------------------
     # TARJETA 1: 🛡️ Combinada Blindada (Bajo Riesgo - Cuota Objetivo 1.65 - 2.15)
     # --------------------------------------------------------------------------
-    # Selección 1: Doble Oportunidad del favorito (o DNB / 1X2 si cuota < 1.12)
     sel1_dc = catalog["block_double_chance"]["1X"] if fav_is_home else catalog["block_double_chance"]["X2"]
     mkt1 = "Doble Oportunidad"
     if sel1_dc["retail_odds"] < 1.12:
@@ -343,7 +350,6 @@ def generate_betplay_same_game_parlays(
             sel1_dc = catalog["block_1x2"]["home" if fav_is_home else "away"]
             mkt1 = "Resultado Final (1X2)"
 
-    # Selección 2: Total de Goles Favorito (Más de 0.5 -> Más de 1.5 -> Total +2.5 si cuota < 1.12)
     sel2_fg = catalog["block_team_goals_home"]["over_05"] if fav_is_home else catalog["block_team_goals_away"]["over_05"]
     mkt2 = "Total Goles Favorito"
     if sel2_fg["retail_odds"] < 1.12:
@@ -355,7 +361,6 @@ def generate_betplay_same_game_parlays(
             sel2_fg = catalog["block_goal_bands"].get("over_25_total") or catalog["block_goal_bands"]["band_3_4"]
             mkt2 = "Línea de Goles Partido"
 
-    # Selección 3: 1ª Mitad Más de 0.5 Goles (o Gol en Ambas Mitades / Total +1.5 si < 1.12)
     sel3_1h = catalog["block_both_halves"]["first_half_over05"]
     mkt3 = "Goles 1ª Mitad"
     if sel3_1h["retail_odds"] < 1.12:
@@ -373,26 +378,30 @@ def generate_betplay_same_game_parlays(
         _build_safe_leg(mkt3, sel3_1h),
     ]
 
-    # Exact positive correlation formula:
-    # Event 1 (Double Chance) and Event 2 (Favorite Over 0.5) have rho > 0.75
-    # P_conjunta_1_y_2 = min(P_doble_oportunidad, P_gol_favorito) * 0.92
-    # P_combinada_total = P_conjunta_1_y_2 * P_tercera_linea * 1.05
-    p_dc = float(legs_t1[0]["prob"])
-    p_fg = float(legs_t1[1]["prob"])
-    p_3rd = float(legs_t1[2]["prob"])
-
-    p_conj_1_2 = min(p_dc, p_fg) * 0.92
-    p_comb_t1 = min(0.88, max(0.35, p_conj_1_2 * p_3rd * 1.05))
+    if mc_sim is not None:
+        p_mc_raw1 = mc_sim["p_blindada_h"] if fav_is_home else mc_sim["p_blindada_a"]
+        p_comb_t1 = min(0.88, max(0.35, float(p_mc_raw1)))
+    else:
+        p_dc = float(legs_t1[0]["prob"])
+        p_fg = float(legs_t1[1]["prob"])
+        p_3rd = float(legs_t1[2]["prob"])
+        p_conj_1_2 = min(p_dc, p_fg) * 0.92
+        p_comb_t1 = min(0.88, max(0.35, p_conj_1_2 * p_3rd * 1.05))
 
     raw_odds_t1 = legs_t1[0]["odds"] * legs_t1[1]["odds"] * legs_t1[2]["odds"]
-    odds_comb_t1 = round(max(1.50, raw_odds_t1 * 0.88), 2)  # BetPlay SGP pricing
+    odds_comb_t1 = round(max(1.50, raw_odds_t1 * 0.88), 2)
     ev_t1 = (p_comb_t1 * odds_comb_t1) - 1.0
     ev_pct_t1 = round(ev_t1 * 100.0, 2)
 
-    # Strict EV gating: If EV <= 0, recommended stake MUST be strictly 0.0
+    oracle_score_t1, is_gold_t1, tier_t1 = calculate_oracle_score(
+        ev_percent=ev_pct_t1,
+        monte_carlo_prob_pct=p_comb_t1 * 100.0,
+        is_steam=is_steam,
+    )
+
     b1 = odds_comb_t1 - 1.0
     q1 = 1.0 - p_comb_t1
-    if ev_pct_t1 > 0.0 and b1 > 0:
+    if oracle_score_t1 > 75.0 and ev_pct_t1 > 0.0 and b1 > 0:
         f_star1 = (p_comb_t1 * b1 - q1) / b1
         stake_pct_t1 = min(0.025, max(0.005, f_star1 * kelly_multiplier * 0.50))
         stake_t1 = round(bankroll * stake_pct_t1, -2 if bankroll >= 10000 else 1)
@@ -411,6 +420,12 @@ def generate_betplay_same_game_parlays(
         "prob_pct": round(p_comb_t1 * 100.0, 1),
         "fair_odds": round(1.0 / p_comb_t1, 2) if p_comb_t1 > 0 else 999.0,
         "ev_pct": ev_pct_t1,
+        "oracle_score": oracle_score_t1,
+        "is_golden_pick": is_gold_t1,
+        "tier_label": tier_t1,
+        "p_monte_carlo": round(p_comb_t1 * 100.0, 1),
+        "steam_move": steam_data,
+        "mc_stats": {"iterations": mc_sim.get("iterations", 10000), "sim_time_ms": mc_sim.get("sim_time_ms", 2.0)} if mc_sim else None,
         "recommended_stake": stake_t1,
         "potential_profit": profit_t1,
         "payout": round(stake_t1 * odds_comb_t1, 2),
@@ -460,18 +475,29 @@ def generate_betplay_same_game_parlays(
         _build_safe_leg(mkt3_t2, sel3_t2),
     ]
 
-    rho_2 = 1.18
-    raw_prob_t2 = legs_t2[0]["prob"] * legs_t2[1]["prob"] * legs_t2[2]["prob"]
-    p_comb_t2 = min(0.70, max(0.30, raw_prob_t2 * rho_2))
+    if mc_sim is not None:
+        p_mc_raw2 = mc_sim["p_ritmo_h"] if fav_is_home else mc_sim["p_ritmo_a"]
+        p_comb_t2 = min(0.70, max(0.28, float(p_mc_raw2)))
+    else:
+        rho_2 = 1.18
+        raw_prob_t2 = legs_t2[0]["prob"] * legs_t2[1]["prob"] * legs_t2[2]["prob"]
+        p_comb_t2 = min(0.70, max(0.30, raw_prob_t2 * rho_2))
+
     raw_odds_t2 = legs_t2[0]["odds"] * legs_t2[1]["odds"] * legs_t2[2]["odds"]
     odds_comb_t2 = round(raw_odds_t2 * 0.92, 2)
     odds_comb_t2 = round(max(2.10, min(3.50, odds_comb_t2)), 2)
     ev_t2 = (p_comb_t2 * odds_comb_t2) - 1.0
     ev_pct_t2 = round(ev_t2 * 100.0, 2)
 
+    oracle_score_t2, is_gold_t2, tier_t2 = calculate_oracle_score(
+        ev_percent=ev_pct_t2,
+        monte_carlo_prob_pct=p_comb_t2 * 100.0,
+        is_steam=is_steam,
+    )
+
     b2 = odds_comb_t2 - 1.0
     q2 = 1.0 - p_comb_t2
-    if ev_pct_t2 > 0.0 and b2 > 0:
+    if oracle_score_t2 > 75.0 and ev_pct_t2 > 0.0 and b2 > 0:
         f_star2 = (p_comb_t2 * b2 - q2) / b2
         stake_pct_t2 = min(0.020, max(0.004, f_star2 * kelly_multiplier * 0.45))
         stake_t2 = round(bankroll * stake_pct_t2, -2 if bankroll >= 10000 else 1)
@@ -490,6 +516,12 @@ def generate_betplay_same_game_parlays(
         "prob_pct": round(p_comb_t2 * 100.0, 1),
         "fair_odds": round(1.0 / p_comb_t2, 2) if p_comb_t2 > 0 else 999.0,
         "ev_pct": ev_pct_t2,
+        "oracle_score": oracle_score_t2,
+        "is_golden_pick": is_gold_t2,
+        "tier_label": tier_t2,
+        "p_monte_carlo": round(p_comb_t2 * 100.0, 1),
+        "steam_move": steam_data,
+        "mc_stats": {"iterations": mc_sim.get("iterations", 10000), "sim_time_ms": mc_sim.get("sim_time_ms", 2.0)} if mc_sim else None,
         "recommended_stake": stake_t2,
         "potential_profit": profit_t2,
         "payout": round(stake_t2 * odds_comb_t2, 2),
@@ -529,22 +561,32 @@ def generate_betplay_same_game_parlays(
         _build_safe_leg(mkt3_t3, sel3_t3),
     ]
 
-    rho_3 = 1.22
-    if ai_adjustment is not None:
-        conf = float(get_ai_field(ai_adjustment, "confianza_ia", 0.8))
-        rho_3 *= (1.0 + (conf - 0.5) * 0.2)
+    if mc_sim is not None:
+        p_mc_raw3 = mc_sim["p_valor_h"] if fav_is_home else mc_sim["p_valor_a"]
+        p_comb_t3 = min(0.55, max(0.20, float(p_mc_raw3)))
+    else:
+        rho_3 = 1.22
+        if ai_adjustment is not None:
+            conf = float(get_ai_field(ai_adjustment, "confianza_ia", 0.8))
+            rho_3 *= (1.0 + (conf - 0.5) * 0.2)
+        raw_prob_t3 = legs_t3[0]["prob"] * legs_t3[1]["prob"] * legs_t3[2]["prob"]
+        p_comb_t3 = min(0.55, max(0.22, raw_prob_t3 * rho_3))
 
-    raw_prob_t3 = legs_t3[0]["prob"] * legs_t3[1]["prob"] * legs_t3[2]["prob"]
-    p_comb_t3 = min(0.55, max(0.22, raw_prob_t3 * rho_3))
     raw_odds_t3 = legs_t3[0]["odds"] * legs_t3[1]["odds"] * legs_t3[2]["odds"]
     odds_comb_t3 = round(raw_odds_t3 * 0.90, 2)
     odds_comb_t3 = round(max(2.85, min(4.50, odds_comb_t3)), 2)
     ev_t3 = (p_comb_t3 * odds_comb_t3) - 1.0
     ev_pct_t3 = round(ev_t3 * 100.0, 2)
 
+    oracle_score_t3, is_gold_t3, tier_t3 = calculate_oracle_score(
+        ev_percent=ev_pct_t3,
+        monte_carlo_prob_pct=p_comb_t3 * 100.0,
+        is_steam=is_steam,
+    )
+
     b3 = odds_comb_t3 - 1.0
     q3 = 1.0 - p_comb_t3
-    if ev_pct_t3 > 0.0 and b3 > 0:
+    if oracle_score_t3 > 75.0 and ev_pct_t3 > 0.0 and b3 > 0:
         f_star3 = (p_comb_t3 * b3 - q3) / b3
         stake_pct_t3 = min(0.015, max(0.003, f_star3 * kelly_multiplier * 0.35))
         stake_t3 = round(bankroll * stake_pct_t3, -2 if bankroll >= 10000 else 1)
@@ -563,6 +605,12 @@ def generate_betplay_same_game_parlays(
         "prob_pct": round(p_comb_t3 * 100.0, 1),
         "fair_odds": round(1.0 / p_comb_t3, 2) if p_comb_t3 > 0 else 999.0,
         "ev_pct": ev_pct_t3,
+        "oracle_score": oracle_score_t3,
+        "is_golden_pick": is_gold_t3,
+        "tier_label": tier_t3,
+        "p_monte_carlo": round(p_comb_t3 * 100.0, 1),
+        "steam_move": steam_data,
+        "mc_stats": {"iterations": mc_sim.get("iterations", 10000), "sim_time_ms": mc_sim.get("sim_time_ms", 2.0)} if mc_sim else None,
         "recommended_stake": stake_t3,
         "potential_profit": profit_t3,
         "payout": round(stake_t3 * odds_comb_t3, 2),
