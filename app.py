@@ -447,6 +447,11 @@ api_key_input = st.sidebar.text_input(
 
 active_api_key = (api_key_input.strip() or env_api_key.strip()) if not demo_mode_toggle else ""
 
+st.sidebar.markdown("---")
+if st.sidebar.button("🔄 Actualizar Cuotas (API)", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
 # 2. Motor de IA (Gemini Pro)
 st.sidebar.markdown("### 🧠 Motor de IA (Gemini Pro)")
 gemini_api_key_input = st.sidebar.text_input(

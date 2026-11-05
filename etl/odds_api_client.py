@@ -10,6 +10,14 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 import requests
 
+try:
+    import streamlit as st
+    cache_decorator = st.cache_data(ttl=14400, show_spinner=False)
+except Exception:
+    def cache_decorator(func):
+        return func
+
+
 ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4"
 
 # Categorized tournaments as per QuantShield specification
@@ -261,6 +269,7 @@ def format_event_name(event: Dict[str, Any]) -> str:
     return f"{home} vs {away}"
 
 
+@cache_decorator
 def fetch_odds(
     sport_key: str,
     api_key: Optional[str] = None,
